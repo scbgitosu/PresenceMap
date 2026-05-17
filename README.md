@@ -81,14 +81,19 @@ writes a continuous raw log and a motion-event log under the selected project:
 survey_projects/<project>/presence_sessions/<session>/
   presence_raw.csv
   presence_events.csv
+  presence_health.csv
+  presence_experiment.json
   presence_baseline.json
 ```
 
 `presence_raw.csv` contains every observed BSSID row from each scan window,
 including RSSI, channel, link RSSI/SNR/bitrate/MCS fields when available, plus
 window-level tripwire metadata. `presence_events.csv` contains thresholded
-`motion` events with confidence scores and baseline deltas. This is coarse RF
-motion sensing only; it does not identify people.
+`motion` events with confidence scores and baseline deltas. `presence_health.csv`
+tracks per-window collector status for multi-day runs. `presence_experiment.json`
+records hardware placement, collection cadence, and the privacy posture for any
+webcam-derived labels. This is coarse RF motion sensing only; it does not
+identify people.
 
 ### HP Linux Setup
 
@@ -203,7 +208,37 @@ survey_projects/<project>/presence_sessions/<session>/
   presence_labels.csv
   presence_states.csv
   presence_model.json
+  presence_eval.json
+  presence_eval_errors.csv
 ```
+
+For privacy-first webcam ground truth, store derived labels instead of
+continuous video. For example, a reviewed webcam signal can be recorded as a
+label source without saving frames:
+
+```bash
+./scripts/run_presence_tripwire.sh \
+  --project survey_projects/apartment_test \
+  --session home_occupancy \
+  --interface wlan1 \
+  --label-block validation_occupied \
+  --block-seconds 300 \
+  --label-source webcam_derived \
+  --label-source-detail "derived occupancy only; no continuous video retained"
+```
+
+After syncing `presence_sessions` back to the Mac, train and evaluate the
+occupancy model:
+
+```bash
+python3 mac_analysis/presence_training.py \
+  --project survey_projects/apartment_test \
+  --session home_occupancy
+```
+
+This rewrites `presence_model.json`, writes `presence_eval.json`, and lists false
+positive/false negative windows in `presence_eval_errors.csv` for dashboard
+review.
 
 Run conservative live occupancy scoring after the model has both vacant and
 occupied examples:

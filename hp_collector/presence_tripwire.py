@@ -78,7 +78,24 @@ PRESENCE_EVENT_COLUMNS = [
     "note",
 ]
 
+PRESENCE_HEALTH_COLUMNS = [
+    "timestamp",
+    "session_id",
+    "window_id",
+    "phase",
+    "status",
+    "scan_error",
+    "sample_count",
+    "visible_bssid_count",
+    "missing_sample_count",
+    "rssi_avg_dbm",
+    "snr_avg_db",
+    "interface",
+    "scan_backend",
+]
+
 BASELINE_VERSION = 1
+EXPERIMENT_METADATA_VERSION = 1
 
 
 @dataclass
@@ -173,6 +190,10 @@ def default_model_path(session_dir: Path) -> Path:
     return session_dir / "presence_model.json"
 
 
+def default_metadata_path(session_dir: Path) -> Path:
+    return session_dir / "presence_experiment.json"
+
+
 def _read_csv_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -199,6 +220,85 @@ def _append_label(labels_path: Path, row: dict) -> None:
 
 def _append_state(states_path: Path, row: dict) -> None:
     _append_row(states_path, STATE_COLUMNS, row)
+
+
+def append_health(health_path: Path, window: PresenceWindow, *, interface: str, backend: str) -> None:
+    summary = window.summary
+    _append_row(
+        health_path,
+        PRESENCE_HEALTH_COLUMNS,
+        {
+            "timestamp": now_iso(),
+            "session_id": summary.get("session_id", ""),
+            "window_id": window.window_id,
+            "phase": window.phase,
+            "status": window.status,
+            "scan_error": window.error_message,
+            "sample_count": summary.get("sample_count", ""),
+            "visible_bssid_count": window.visible_bssid_count,
+            "missing_sample_count": summary.get("missing_sample_count", ""),
+            "rssi_avg_dbm": summary.get("rssi_avg_dbm", ""),
+            "snr_avg_db": summary.get("snr_avg_db", ""),
+            "interface": interface,
+            "scan_backend": backend,
+        },
+    )
+
+
+def ensure_experiment_metadata(args, config, session_dir: Path) -> Path:
+    path = default_metadata_path(session_dir)
+    if path.exists() and not args.refresh_metadata:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "version": EXPERIMENT_METADATA_VERSION,
+        "created_at": now_iso(),
+        "project": str(args.project),
+        "session_id": args.session,
+        "collector_role": "hp_ar9271_rf_collector",
+        "analysis_role": "macbook_training_review",
+        "privacy": {
+            "webcam_role": "derived_ground_truth_labels",
+            "video_retention": args.video_retention,
+            "stores_continuous_video": False,
+        },
+        "hardware": {
+            "collector": args.collector_label,
+            "wifi_adapter": args.adapter_label,
+            "router": args.router_label,
+            "node": args.node_label,
+            "webcam": args.webcam_label,
+        },
+        "placement": {
+            "collector": args.collector_placement,
+            "router": args.router_placement,
+            "node": args.node_placement,
+            "webcam": args.webcam_placement,
+            "location_label": args.location_label,
+        },
+        "collection_schedule": {
+            "window_seconds": args.window_seconds,
+            "samples_per_window": args.samples_per_window,
+            "delay_seconds": args.delay,
+            "baseline_seconds": args.baseline_seconds,
+            "block_seconds": args.block_seconds,
+        },
+        "rf": {
+            "interface": args.interface,
+            "scan_backend": args.backend,
+            "target_ssid": args.ssid,
+            "target_bssid": args.bssid or "",
+        },
+        "notes": args.experiment_note,
+        "project_config": {
+            "project_name": getattr(config, "project_name", ""),
+            "collection_mode": getattr(config, "collection_mode", ""),
+        },
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return path
 
 
 def _first_window_number(history: list[dict], requested: int) -> int:
@@ -449,10 +549,13 @@ def run_calibration(args, config) -> Path:
     session_dir = presence_session_dir(args.project, args.session)
     raw_path = session_dir / "presence_raw.csv"
     events_path = session_dir / "presence_events.csv"
+    health_path = session_dir / "presence_health.csv"
     baseline_path = Path(args.baseline_path) if args.baseline_path else default_baseline_path(session_dir)
     windows_needed = max(2, math.ceil(args.baseline_seconds / args.window_seconds))
+    ensure_experiment_metadata(args, config, session_dir)
     ensure_csv(raw_path, PRESENCE_RAW_COLUMNS)
     ensure_csv(events_path, PRESENCE_EVENT_COLUMNS)
+    ensure_csv(health_path, PRESENCE_HEALTH_COLUMNS)
 
     logger.info("calibrating %s windows into %s", windows_needed, baseline_path)
     windows: list[PresenceWindow] = []
@@ -470,6 +573,7 @@ def run_calibration(args, config) -> Path:
             phase="calibration",
         )
         append_presence_raw(raw_path, window)
+        append_health(health_path, window, interface=args.interface, backend=args.backend)
         windows.append(window)
         logger.info(
             "calibration window %s/%s status=%s rssi=%s std=%s bssids=%s",
@@ -499,12 +603,15 @@ def run_calibration(args, config) -> Path:
 def run_label_block(args, config) -> Path:
     session_dir = presence_session_dir(args.project, args.session)
     raw_path = session_dir / "presence_raw.csv"
+    health_path = session_dir / "presence_health.csv"
     features_path = session_dir / "presence_features.csv"
     labels_path = session_dir / "presence_labels.csv"
     model_path = Path(args.occupancy_model_path) if args.occupancy_model_path else default_model_path(session_dir)
     windows_needed = max(1, math.ceil(args.block_seconds / args.window_seconds))
     block_id = f"{args.session}_{args.label_block}_{int(time.time())}"
+    ensure_experiment_metadata(args, config, session_dir)
     ensure_csv(raw_path, PRESENCE_RAW_COLUMNS)
+    ensure_csv(health_path, PRESENCE_HEALTH_COLUMNS)
     ensure_csv(features_path, FEATURE_COLUMNS)
     ensure_csv(labels_path, LABEL_COLUMNS)
 
@@ -525,10 +632,22 @@ def run_label_block(args, config) -> Path:
             phase=f"label_{args.label_block}",
         )
         append_presence_raw(raw_path, window)
+        append_health(health_path, window, interface=args.interface, backend=args.backend)
         motion_event = None
         feature = extract_feature_row(window, history, motion_score=motion_event.score if motion_event else None)
         _append_feature(features_path, feature)
-        _append_label(labels_path, label_row(args.label_block, block_id, feature, note=args.note))
+        _append_label(
+            labels_path,
+            label_row(
+                args.label_block,
+                block_id,
+                feature,
+                note=args.note,
+                label_source=args.label_source,
+                source_detail=args.label_source_detail,
+                label_confidence=args.label_confidence,
+            ),
+        )
         history.append(feature)
         logger.info(
             "label=%s window=%s status=%s rssi=%s bssids=%s",
@@ -561,6 +680,7 @@ def run_monitor(args, config) -> None:
     session_dir = presence_session_dir(args.project, args.session)
     raw_path = session_dir / "presence_raw.csv"
     events_path = session_dir / "presence_events.csv"
+    health_path = session_dir / "presence_health.csv"
     features_path = session_dir / "presence_features.csv"
     states_path = session_dir / "presence_states.csv"
     baseline_path = Path(args.baseline_path) if args.baseline_path else default_baseline_path(session_dir)
@@ -578,8 +698,10 @@ def run_monitor(args, config) -> None:
         state_machine = OccupancyStateMachine(required_windows=required)
         if not model_is_ready(occupancy_model):
             logger.warning("occupancy model has limited labels; live states may remain unknown")
+    ensure_experiment_metadata(args, config, session_dir)
     ensure_csv(raw_path, PRESENCE_RAW_COLUMNS)
     ensure_csv(events_path, PRESENCE_EVENT_COLUMNS)
+    ensure_csv(health_path, PRESENCE_HEALTH_COLUMNS)
     ensure_csv(features_path, FEATURE_COLUMNS)
     if args.occupancy_monitor:
         ensure_csv(states_path, STATE_COLUMNS)
@@ -615,6 +737,7 @@ def run_monitor(args, config) -> None:
             phase="monitor",
         )
         append_presence_raw(raw_path, window)
+        append_health(health_path, window, interface=args.interface, backend=args.backend)
         event = score_window(window, baseline, args.threshold) if baseline else None
         feature = extract_feature_row(window, history, motion_score=event.score if event else None)
         _append_feature(features_path, feature)
@@ -688,6 +811,21 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument("--occupancy-monitor", action="store_true", help="Run live conservative occupancy scoring")
     parser.add_argument("--occupancy-model-path", default=None)
     parser.add_argument("--note", default="", help="Optional note for labeled occupancy windows")
+    parser.add_argument("--label-source", default="manual", help="Ground-truth label source, e.g. manual, webcam_derived")
+    parser.add_argument("--label-source-detail", default="", help="Optional label source detail without storing video")
+    parser.add_argument("--label-confidence", default="", help="Optional confidence for derived labels")
+    parser.add_argument("--refresh-metadata", action="store_true", help="Rewrite presence_experiment.json")
+    parser.add_argument("--experiment-note", default="", help="Session-level experiment note")
+    parser.add_argument("--video-retention", default="derived_labels_only", help="Privacy note for webcam/video retention")
+    parser.add_argument("--collector-label", default="HP Linux laptop", help="Collector hardware label")
+    parser.add_argument("--adapter-label", default="AR9271 Wi-Fi adapter", help="Wi-Fi adapter label")
+    parser.add_argument("--router-label", default="Netgear Nighthawk router", help="Router hardware label")
+    parser.add_argument("--node-label", default="Netgear Nighthawk node", help="Mesh/node hardware label")
+    parser.add_argument("--webcam-label", default="webcam", help="Webcam label used for derived ground truth")
+    parser.add_argument("--collector-placement", default="", help="Collector placement note")
+    parser.add_argument("--router-placement", default="", help="Router placement note")
+    parser.add_argument("--node-placement", default="", help="Node placement note")
+    parser.add_argument("--webcam-placement", default="", help="Webcam placement note")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
 

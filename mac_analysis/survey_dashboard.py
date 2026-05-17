@@ -373,19 +373,31 @@ def _render_presence_occupancy(project_dir: Path):
     states_path = session_dir / "presence_states.csv"
     events_path = session_dir / "presence_events.csv"
     model_path = session_dir / "presence_model.json"
+    eval_path = session_dir / "presence_eval.json"
+    errors_path = session_dir / "presence_eval_errors.csv"
+    health_path = session_dir / "presence_health.csv"
+    metadata_path = session_dir / "presence_experiment.json"
 
     st.caption(f"Artifacts: `{session_dir}`")
-    cols = st.columns(5)
+    cols = st.columns(7)
     cols[0].metric("Features", "yes" if features_path.exists() else "missing")
     cols[1].metric("Labels", "yes" if labels_path.exists() else "missing")
     cols[2].metric("States", "yes" if states_path.exists() else "missing")
     cols[3].metric("Events", "yes" if events_path.exists() else "missing")
     cols[4].metric("Model", "yes" if model_path.exists() else "missing")
+    cols[5].metric("Eval", "yes" if eval_path.exists() else "missing")
+    cols[6].metric("Health", "yes" if health_path.exists() else "missing")
 
     labels_df = pd.read_csv(labels_path) if labels_path.exists() else pd.DataFrame()
     features_df = pd.read_csv(features_path) if features_path.exists() else pd.DataFrame()
     states_df = pd.read_csv(states_path) if states_path.exists() else pd.DataFrame()
     events_df = pd.read_csv(events_path) if events_path.exists() else pd.DataFrame()
+    errors_df = pd.read_csv(errors_path) if errors_path.exists() else pd.DataFrame()
+    health_df = pd.read_csv(health_path) if health_path.exists() else pd.DataFrame()
+
+    if metadata_path.exists():
+        with st.expander("Experiment Metadata", expanded=False):
+            _json_if_exists(metadata_path)
 
     if not labels_df.empty:
         st.subheader("Label Coverage")
@@ -395,6 +407,21 @@ def _render_presence_occupancy(project_dir: Path):
     if model_path.exists():
         with st.expander("Occupancy Model", expanded=True):
             _json_if_exists(model_path)
+
+    if eval_path.exists():
+        evaluation = _load_json(eval_path, {})
+        st.subheader("Training Evaluation")
+        cols = st.columns(5)
+        cols[0].metric("Model Ready", "yes" if evaluation.get("model_ready") else "no")
+        cols[1].metric("Accuracy", evaluation.get("accuracy", "n/a"))
+        cols[2].metric("Known Rate", evaluation.get("known_rate", "n/a"))
+        cols[3].metric("Errors", evaluation.get("error_count", "n/a"))
+        cols[4].metric("Windows", evaluation.get("total_labeled_windows", "n/a"))
+        with st.expander("Evaluation JSON", expanded=False):
+            st.json(evaluation)
+        if not errors_df.empty:
+            st.subheader("False Positives / False Negatives")
+            st.dataframe(errors_df, use_container_width=True, hide_index=True)
 
     if not states_df.empty:
         st.subheader("State Timeline")
@@ -429,9 +456,15 @@ def _render_presence_occupancy(project_dir: Path):
         st.subheader("Motion Events")
         st.dataframe(events_df.tail(100), use_container_width=True, hide_index=True)
 
+    if not health_df.empty:
+        st.subheader("Collector Health")
+        health_counts = health_df.groupby(["phase", "status"], dropna=False).size().reset_index(name="windows")
+        st.dataframe(health_counts, use_container_width=True, hide_index=True)
+        st.dataframe(health_df.tail(100), use_container_width=True, hide_index=True)
+
     if not labels_df.empty and not states_df.empty:
         st.subheader("Validation Summary")
-        validation = labels_df[labels_df["label"] == "validation"]
+        validation = labels_df[labels_df["is_training"].astype(str) == "0"]
         if validation.empty:
             st.info("No validation block labels found yet.")
         else:
@@ -453,6 +486,10 @@ def _render_presence_occupancy(project_dir: Path):
         "./scripts/run_presence_tripwire.sh "
         f"--project {project_dir} --session {session_id} --interface wlan1 "
         "--monitor --occupancy-monitor"
+    )
+    st.code(
+        "python3 mac_analysis/presence_training.py "
+        f"--project {project_dir} --session {session_id}"
     )
 
 

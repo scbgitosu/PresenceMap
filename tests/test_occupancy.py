@@ -1,8 +1,12 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+from mac_analysis.presence_training import train_and_evaluate
 from shared.occupancy import (
     OccupancyStateMachine,
+    evaluate_profile_model,
     extract_feature_row,
     label_row,
     model_is_ready,
@@ -59,11 +63,22 @@ class OccupancyTests(unittest.TestCase):
 
         occupied = label_row("occupied_moving", "block-1", feature)
         validation = label_row("validation", "block-2", feature)
+        derived = label_row(
+            "validation_occupied",
+            "block-3",
+            feature,
+            label_source="webcam_derived",
+            source_detail="frame_count_only",
+            label_confidence="0.9",
+        )
 
         self.assertEqual(occupied["occupancy_label"], "occupied")
         self.assertEqual(occupied["is_training"], "1")
         self.assertEqual(validation["occupancy_label"], "unknown")
         self.assertEqual(validation["is_training"], "0")
+        self.assertEqual(derived["occupancy_label"], "occupied")
+        self.assertEqual(derived["is_training"], "0")
+        self.assertEqual(derived["label_source"], "webcam_derived")
 
     def test_train_and_score_conservative_model_with_hysteresis(self):
         history = []
@@ -103,6 +118,88 @@ class OccupancyTests(unittest.TestCase):
 
         self.assertEqual(decision.raw_state, "unknown")
         self.assertEqual(decision.reason, "scan_failed")
+
+    def test_evaluate_profile_model_reports_errors(self):
+        history = []
+        feature_rows = []
+        label_rows = []
+        training = [
+            ("w01", -55, 35, "vacant"),
+            ("w02", -56, 34, "vacant"),
+            ("w03", -66, 24, "occupied_still"),
+            ("w04", -67, 23, "occupied_moving"),
+        ]
+        for window_id, rssi, snr, label in training:
+            feature = extract_feature_row(_window(window_id, rssi, snr), history, motion_score=0.1)
+            feature_rows.append(feature)
+            label_rows.append(label_row(label, "train", feature))
+            history.append(feature)
+
+        validation_feature = extract_feature_row(_window("w05", -66, 24), history, motion_score=0.2)
+        feature_rows.append(validation_feature)
+        label_rows.append(
+            label_row(
+                "validation_occupied",
+                "validation",
+                validation_feature,
+                label_source="webcam_derived",
+            )
+        )
+
+        mismatch_feature = extract_feature_row(_window("w06", -55, 35), history, motion_score=0.0)
+        feature_rows.append(mismatch_feature)
+        label_rows.append(label_row("validation_occupied", "validation", mismatch_feature))
+
+        model = train_profile_model(feature_rows, label_rows, session_id="home_occupancy")
+        model["thresholds"]["unknown_threshold"] = 0.2
+
+        evaluation = evaluate_profile_model(feature_rows, label_rows, model, session_id="home_occupancy")
+
+        self.assertEqual(evaluation["total_labeled_windows"], 6)
+        self.assertGreaterEqual(evaluation["correct_windows"], 5)
+        self.assertEqual(evaluation["error_count"], 1)
+        self.assertEqual(evaluation["errors"][0]["window_id"], "w06")
+
+    def test_train_and_evaluate_writes_artifacts(self):
+        history = []
+        feature_rows = []
+        label_rows = []
+        examples = [
+            ("w01", -55, 35, "vacant"),
+            ("w02", -56, 34, "vacant"),
+            ("w03", -66, 24, "occupied"),
+            ("w04", -67, 23, "occupied"),
+        ]
+        for window_id, rssi, snr, label in examples:
+            feature = extract_feature_row(_window(window_id, rssi, snr), history, motion_score=0.1)
+            feature_rows.append(feature)
+            label_rows.append(label_row(label, "block", feature))
+            history.append(feature)
+
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            session_dir = project / "presence_sessions" / "home_occupancy"
+            session_dir.mkdir(parents=True)
+            features_path = session_dir / "presence_features.csv"
+            labels_path = session_dir / "presence_labels.csv"
+
+            import csv
+
+            with open(features_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(feature_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(feature_rows)
+            with open(labels_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(label_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(label_rows)
+
+            evaluation = train_and_evaluate(project=project, session="home_occupancy")
+
+            self.assertTrue((session_dir / "presence_model.json").exists())
+            self.assertTrue((session_dir / "presence_eval.json").exists())
+            self.assertTrue((session_dir / "presence_eval_errors.csv").exists())
+            self.assertTrue(evaluation["model_ready"])
 
 
 if __name__ == "__main__":

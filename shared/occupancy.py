@@ -7,11 +7,28 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 
-OCCUPANCY_LABELS = {"vacant", "occupied_still", "occupied_moving", "validation"}
+OCCUPANCY_LABELS = {
+    "vacant",
+    "occupied",
+    "occupied_still",
+    "occupied_moving",
+    "unknown",
+    "validation",
+    "validation_vacant",
+    "validation_occupied",
+}
 TRAINING_OCCUPANCY = {
     "vacant": "vacant",
+    "occupied": "occupied",
     "occupied_still": "occupied",
     "occupied_moving": "occupied",
+}
+LABEL_OCCUPANCY = {
+    **TRAINING_OCCUPANCY,
+    "validation_vacant": "vacant",
+    "validation_occupied": "occupied",
+    "validation": "unknown",
+    "unknown": "unknown",
 }
 MODEL_VERSION = 1
 
@@ -55,6 +72,9 @@ LABEL_COLUMNS = [
     "label",
     "occupancy_label",
     "is_training",
+    "label_source",
+    "source_detail",
+    "label_confidence",
     "window_id",
     "session_id",
     "timestamp_start",
@@ -87,6 +107,20 @@ MODEL_FEATURES = [
     "rssi_delta_prev_db",
     "rssi_recent_std_db",
     "recent_motion_score",
+]
+
+EVAL_ERROR_COLUMNS = [
+    "window_id",
+    "timestamp_start",
+    "expected_state",
+    "predicted_state",
+    "raw_state",
+    "confidence",
+    "occupied_score",
+    "vacant_score",
+    "reason",
+    "label",
+    "label_source",
 ]
 
 
@@ -212,16 +246,28 @@ def extract_feature_row(window, history: list[dict], motion_score: Optional[floa
     return {column: row.get(column, "") for column in FEATURE_COLUMNS}
 
 
-def label_row(label: str, block_id: str, feature_row: dict, note: str = "") -> dict:
+def label_row(
+    label: str,
+    block_id: str,
+    feature_row: dict,
+    note: str = "",
+    *,
+    label_source: str = "manual",
+    source_detail: str = "",
+    label_confidence: str = "",
+) -> dict:
     if label not in OCCUPANCY_LABELS:
         raise ValueError(f"Unsupported occupancy label: {label}")
-    occupancy_label = TRAINING_OCCUPANCY.get(label, "unknown")
+    occupancy_label = LABEL_OCCUPANCY.get(label, "unknown")
     is_training = "1" if label in TRAINING_OCCUPANCY else "0"
     return {
         "block_id": block_id,
         "label": label,
         "occupancy_label": occupancy_label,
         "is_training": is_training,
+        "label_source": label_source,
+        "source_detail": source_detail,
+        "label_confidence": label_confidence,
         "window_id": feature_row.get("window_id", ""),
         "session_id": feature_row.get("session_id", ""),
         "timestamp_start": feature_row.get("timestamp_start", ""),
@@ -347,4 +393,66 @@ def state_row(feature_row: dict, decision: OccupancyDecision, model: dict) -> di
         "vacant_score": decision.vacant_score if decision.vacant_score is not None else "",
         "reason": decision.reason,
         "model_id": model.get("model_id", ""),
+    }
+
+
+def evaluate_profile_model(feature_rows: list[dict], label_rows: list[dict], model: dict, *, session_id: str) -> dict:
+    """Score labeled windows and summarize occupied/vacant validation quality."""
+    features_by_window = {row.get("window_id"): row for row in feature_rows if row.get("window_id")}
+    confusion = {
+        "vacant": {"vacant": 0, "occupied": 0, "unknown": 0},
+        "occupied": {"vacant": 0, "occupied": 0, "unknown": 0},
+    }
+    evaluated = []
+    errors = []
+
+    for label in label_rows:
+        expected = label.get("occupancy_label")
+        if expected not in ("vacant", "occupied"):
+            continue
+        feature = features_by_window.get(label.get("window_id"))
+        if not feature:
+            continue
+        decision = score_occupancy(feature, model)
+        predicted = decision.raw_state if decision.raw_state in ("vacant", "occupied") else "unknown"
+        confusion[expected][predicted] += 1
+        row = {
+            "window_id": feature.get("window_id", ""),
+            "timestamp_start": feature.get("timestamp_start", ""),
+            "expected_state": expected,
+            "predicted_state": predicted,
+            "raw_state": decision.raw_state,
+            "confidence": decision.confidence,
+            "occupied_score": decision.occupied_score if decision.occupied_score is not None else "",
+            "vacant_score": decision.vacant_score if decision.vacant_score is not None else "",
+            "reason": decision.reason,
+            "label": label.get("label", ""),
+            "label_source": label.get("label_source", ""),
+        }
+        evaluated.append(row)
+        if predicted != expected:
+            errors.append(row)
+
+    total = len(evaluated)
+    correct = sum(1 for row in evaluated if row["predicted_state"] == row["expected_state"])
+    known = sum(1 for row in evaluated if row["predicted_state"] in ("vacant", "occupied"))
+    false_positive_occupied = confusion["vacant"]["occupied"]
+    false_negative_occupied = confusion["occupied"]["vacant"] + confusion["occupied"]["unknown"]
+
+    return {
+        "version": 1,
+        "session_id": session_id,
+        "model_id": model.get("model_id", ""),
+        "model_type": model.get("model_type", ""),
+        "thresholds": model.get("thresholds", {}),
+        "total_labeled_windows": total,
+        "known_prediction_windows": known,
+        "correct_windows": correct,
+        "accuracy": round(correct / total, 4) if total else None,
+        "known_rate": round(known / total, 4) if total else None,
+        "confusion": confusion,
+        "false_positive_occupied": false_positive_occupied,
+        "false_negative_occupied": false_negative_occupied,
+        "error_count": len(errors),
+        "errors": errors,
     }
