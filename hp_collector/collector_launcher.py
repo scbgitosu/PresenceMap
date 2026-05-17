@@ -51,6 +51,7 @@ class CollectorLauncher(QMainWindow):
         layout.addWidget(QLabel("Project path:"))
         row = QHBoxLayout()
         self.project_edit = QLineEdit(project)
+        self.project_edit.editingFinished.connect(self._update_presence_output_hint)
         row.addWidget(self.project_edit)
         browse_btn = QPushButton("Browse")
         browse_btn.clicked.connect(self._browse_project)
@@ -62,10 +63,6 @@ class CollectorLauncher(QMainWindow):
         preflight_btn.clicked.connect(self._run_preflight)
         button_row.addWidget(preflight_btn)
 
-        launch_btn = QPushButton("Launch Collector")
-        launch_btn.clicked.connect(self._launch_collector)
-        button_row.addWidget(launch_btn)
-
         open_btn = QPushButton("Open Project Folder")
         open_btn.clicked.connect(self._open_project_folder)
         button_row.addWidget(open_btn)
@@ -75,8 +72,10 @@ class CollectorLauncher(QMainWindow):
         presence_layout = QVBoxLayout(presence_grp)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Session:"))
+        row.addWidget(QLabel("Presence session name:"))
         self.presence_session_edit = QLineEdit("bedroom_v1")
+        self.presence_session_edit.setToolTip("Folder name under <project>/presence_sessions/. Do not include survey_sessions/.")
+        self.presence_session_edit.editingFinished.connect(self._update_presence_output_hint)
         row.addWidget(self.presence_session_edit)
         row.addWidget(QLabel("Interface:"))
         self.presence_interface_edit = QLineEdit("wlan1")
@@ -156,7 +155,9 @@ class CollectorLauncher(QMainWindow):
         validation_row.addWidget(stop_btn)
         presence_layout.addLayout(validation_row)
 
-        presence_layout.addWidget(QLabel("Mac analysis after syncing: python3 mac_analysis/presence_training.py --project <project> --session <session>"))
+        self.presence_output_label = QLabel("")
+        presence_layout.addWidget(self.presence_output_label)
+        presence_layout.addWidget(QLabel("Mac analysis after syncing: python3 mac_analysis/presence_training.py --project <project> --session <presence-session>"))
         layout.addWidget(presence_grp)
 
         self.output = QTextEdit()
@@ -165,12 +166,26 @@ class CollectorLauncher(QMainWindow):
         layout.addWidget(self.output)
 
         self.resize(820, 520)
+        self._update_presence_output_hint()
 
     def _project(self) -> str:
         return self.project_edit.text().strip() or DEFAULT_PROJECT
 
-    def _presence_session(self) -> str:
-        return self.presence_session_edit.text().strip() or "bedroom_v1"
+    def _presence_session(self, *, quiet: bool = False) -> str:
+        raw = self.presence_session_edit.text().strip() or "bedroom_v1"
+        normalized = Path(raw).name
+        if normalized != raw:
+            self.presence_session_edit.setText(normalized)
+            if not quiet:
+                self._append(f"[presence] Using session name '{normalized}' from '{raw}'")
+        return normalized
+
+    def _presence_output_dir(self) -> Path:
+        return Path(self._project()) / "presence_sessions" / self._presence_session(quiet=True)
+
+    def _update_presence_output_hint(self):
+        if hasattr(self, "presence_output_label"):
+            self.presence_output_label.setText(f"Output folder: {self._presence_output_dir()}")
 
     def _presence_interface(self) -> str:
         return self.presence_interface_edit.text().strip() or "wlan1"
@@ -260,11 +275,6 @@ class CollectorLauncher(QMainWindow):
             QMessageBox.information(self, "Preflight", "Wi-Fi preflight passed.")
         else:
             QMessageBox.warning(self, "Preflight", "Wi-Fi preflight failed. See output.")
-
-    def _launch_collector(self):
-        project = self._project()
-        script = REPO_ROOT / "scripts" / "run_collector.sh"
-        self._run_process(str(script), ["--project", project], "Collector")
 
     def _presence_base_args(self) -> list[str]:
         return [

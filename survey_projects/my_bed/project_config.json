@@ -1,0 +1,21 @@
+{
+  "collection_mode": "presence_room_experiment",
+  "default_interface": "wlxc01c304311fe",
+  "paths": {
+    "floorplan_png": "survey_projects/my_bed/floorplan.png",
+    "rooms_json": "survey_projects/my_bed/rooms.json",
+    "router_positions_json": "survey_projects/my_bed/router_positions.json"
+  },
+  "presence": {
+    "analysis": "MacBook training/review",
+    "collector": "HP Linux laptop + AR9271",
+    "first_room_label": "master bed",
+    "video_retention": "derived_labels_only",
+    "webcam_role": "derived_ground_truth_labels"
+  },
+  "project_name": "my_bed",
+  "scan_backend": "iw",
+  "target_bssid": "",
+  "target_ssid": "NETGEAR97",
+  "units": "feet"
+}

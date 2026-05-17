@@ -4,7 +4,7 @@ PresenceMap is a local-first RF sensing experiment for exploring whether ordinar
 Wi-Fi observations can support motion detection, room presence, and lightweight
 automation/security workflows.
 
-This project is forked from HeatMap and intentionally keeps the same core stack:
+This project is forked from HeatMap, but the active workflow is PresenceMap:
 
 - HP Linux machine for field collection
 - External Atheros Wi-Fi adapter
@@ -44,15 +44,14 @@ confidence-scored estimate rather than precise tracking.
 
 ## Project Direction
 
-PresenceMap will evolve the original HeatMap workflow in three phases:
+PresenceMap will evolve in three phases:
 
 ### Phase 1: Continuous Collection
 
 - Add an HP-side continuous collector.
 - Record time-series RF observations instead of click-based survey points.
-- Keep the existing interface discovery, `iw`/`nmcli` support, project config,
-  project config and CSV writer patterns; floorplan metadata remains optional
-  context for dashboards and later map overlays.
+- Keep interface discovery, `iw`/`nmcli` support, project config, and CSV writer
+  patterns. Floorplan metadata remains optional context for later map overlays.
 
 ### Phase 2: Motion and Presence Scoring
 
@@ -69,8 +68,8 @@ PresenceMap will evolve the original HeatMap workflow in three phases:
 
 ## Current Status
 
-This repo now contains the inherited HeatMap survey workflow plus a first
-PresenceMap prototype for headless HP-side tripwire collection.
+This repo now centers on the PresenceMap prototype for headless HP-side
+collection, Mac-side training, and local review.
 
 ## HP Presence Tripwire Prototype
 
