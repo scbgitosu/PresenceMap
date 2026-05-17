@@ -1,17 +1,27 @@
 {
-  "project_name": "Apartment Test",
-  "target_ssid": "NETGEAR97",
-  "target_bssid": "",
+  "collection_mode": "presence_room_experiment",
   "default_interface": "wlxc01c304311fe",
-  "units": "feet",
-  "collection_mode": "click_to_scan",
-  "scan_backend": "iw",
   "paths": {
     "floorplan_png": "survey_projects/apartment_test/floorplan.png",
     "rooms_json": "survey_projects/apartment_test/rooms.json",
-    "router_positions_json": "survey_projects/apartment_test/router_positions.json",
-    "walk_waypoints_json": "survey_projects/apartment_test/walk_waypoints.json",
-    "survey_sessions_dir": "survey_projects/apartment_test/survey_sessions"
+    "router_positions_json": "survey_projects/apartment_test/router_positions.json"
   },
-  "updated_at": "2026-05-16T05:32:25.083Z"
+  "presence": {
+    "analysis": "MacBook training/review",
+    "collector": "HP Linux laptop + AR9271",
+    "collector_placement": "HP + AR9271 fixed in master_bed",
+    "default_session": "empty_master",
+    "first_room_label": "master_bed",
+    "hp_sync_target": "ubuntu@192.168.0.121:~monitor/PresenceMap",
+    "label_source": "webcam_derived",
+    "label_source_detail": "derived occupancy only; no continuous video retained",
+    "router_placement": "router fixed in master_bed",
+    "video_retention": "derived_labels_only",
+    "webcam_role": "derived_ground_truth_labels"
+  },
+  "project_name": "Apartment Test",
+  "scan_backend": "iw",
+  "target_bssid": "",
+  "target_ssid": "NETGEAR97",
+  "units": "feet"
 }
