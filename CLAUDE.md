@@ -1,7 +1,25 @@
+# PresenceMap Agent Notes
+
+PresenceMap is a local fork of HeatMap for RF-based motion, presence, and
+automation experiments.
+
+The inherited HeatMap codebase can still be used as the reference architecture:
+
+- `hp_collector/` contains the HP Linux-side field collection patterns.
+- `mac_analysis/` contains Mac-side Streamlit dashboards and floorplan tooling.
+- `shared/` contains common models, CSV schemas, project paths, and metrics.
+
+The immediate direction is to add a continuous collection path and event-scoring
+pipeline while preserving the original survey workflow as useful reference code.
+
+Before editing inherited functions, classes, or methods, consult GitNexus impact
+analysis for the original HeatMap symbols when available. PresenceMap should be
+indexed separately once its first code changes are in place.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **HeatMap** (1247 symbols, 2216 relationships, 110 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **PresenceMap** (1301 symbols, 2087 relationships, 71 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -24,10 +42,10 @@ This project is indexed by GitNexus as **HeatMap** (1247 symbols, 2216 relations
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/HeatMap/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/HeatMap/clusters` | All functional areas |
-| `gitnexus://repo/HeatMap/processes` | All execution flows |
-| `gitnexus://repo/HeatMap/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/PresenceMap/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/PresenceMap/clusters` | All functional areas |
+| `gitnexus://repo/PresenceMap/processes` | All execution flows |
+| `gitnexus://repo/PresenceMap/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

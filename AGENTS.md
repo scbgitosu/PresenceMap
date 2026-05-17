@@ -1,7 +1,47 @@
+# AGENTS.md instructions for PresenceMap
+
+PresenceMap is a local fork of HeatMap for RF-based motion and presence
+detection experiments.
+
+## Current Repository State
+
+- This repo lives at `/Users/scottbrough/Projects/PresenceMap`.
+- It was cloned from `/Users/scottbrough/Projects/HeatMap`.
+- The inherited HeatMap remote is named `heatmap-upstream`.
+- The project is not yet pushed to GitHub.
+- GitNexus may still know the original project as `HeatMap`; use that index only
+  for inherited code understanding until PresenceMap is indexed separately.
+
+## Working Rules
+
+- Keep HeatMap and PresenceMap changes separate.
+- Do not push to the inherited HeatMap remote.
+- Prefer adding PresenceMap functionality beside inherited survey code before
+  deleting or renaming large modules.
+- Before editing inherited Python functions, classes, or methods, use the
+  HeatMap GitNexus index for impact analysis when available.
+- Preserve the HP Linux collector plus Mac Streamlit analysis split unless the
+  user explicitly asks for a different architecture.
+
+## Product Direction
+
+PresenceMap should focus on:
+
+- continuous RF observation
+- motion tripwire detection
+- room-level presence estimation
+- calibration workflows
+- local event logs
+- optional automation outputs such as MQTT or Home Assistant webhooks
+
+PresenceMap should not claim precise person identification from ordinary Wi-Fi
+scan data alone. Treat identity detection as future research that likely needs
+additional hardware or signal sources.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **HeatMap** (1247 symbols, 2216 relationships, 110 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **PresenceMap** (1301 symbols, 2087 relationships, 71 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -24,10 +64,10 @@ This project is indexed by GitNexus as **HeatMap** (1247 symbols, 2216 relations
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/HeatMap/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/HeatMap/clusters` | All functional areas |
-| `gitnexus://repo/HeatMap/processes` | All execution flows |
-| `gitnexus://repo/HeatMap/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/PresenceMap/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/PresenceMap/clusters` | All functional areas |
+| `gitnexus://repo/PresenceMap/processes` | All execution flows |
+| `gitnexus://repo/PresenceMap/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

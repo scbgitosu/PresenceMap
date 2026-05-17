@@ -348,6 +348,114 @@ def _render_results(project_dir: Path):
             _json_if_exists(path)
 
 
+def _discover_presence_sessions(project_dir: Path) -> list[str]:
+    root = project_dir / "presence_sessions"
+    if not root.exists():
+        return []
+    return sorted(path.name for path in root.iterdir() if path.is_dir())
+
+
+def _render_presence_occupancy(project_dir: Path):
+    st.subheader("Whole-Home Occupancy")
+    session_ids = _discover_presence_sessions(project_dir)
+    if not session_ids:
+        st.info("No `presence_sessions/*` folders found yet.")
+        st.code(
+            "./scripts/run_presence_tripwire.sh "
+            f"--project {project_dir} --session home_occupancy --label-block vacant"
+        )
+        return
+
+    session_id = st.selectbox("Presence session", session_ids, key="presence_session")
+    session_dir = project_dir / "presence_sessions" / session_id
+    features_path = session_dir / "presence_features.csv"
+    labels_path = session_dir / "presence_labels.csv"
+    states_path = session_dir / "presence_states.csv"
+    events_path = session_dir / "presence_events.csv"
+    model_path = session_dir / "presence_model.json"
+
+    st.caption(f"Artifacts: `{session_dir}`")
+    cols = st.columns(5)
+    cols[0].metric("Features", "yes" if features_path.exists() else "missing")
+    cols[1].metric("Labels", "yes" if labels_path.exists() else "missing")
+    cols[2].metric("States", "yes" if states_path.exists() else "missing")
+    cols[3].metric("Events", "yes" if events_path.exists() else "missing")
+    cols[4].metric("Model", "yes" if model_path.exists() else "missing")
+
+    labels_df = pd.read_csv(labels_path) if labels_path.exists() else pd.DataFrame()
+    features_df = pd.read_csv(features_path) if features_path.exists() else pd.DataFrame()
+    states_df = pd.read_csv(states_path) if states_path.exists() else pd.DataFrame()
+    events_df = pd.read_csv(events_path) if events_path.exists() else pd.DataFrame()
+
+    if not labels_df.empty:
+        st.subheader("Label Coverage")
+        label_counts = labels_df.groupby(["label", "occupancy_label"], dropna=False).size().reset_index(name="windows")
+        st.dataframe(label_counts, use_container_width=True, hide_index=True)
+
+    if model_path.exists():
+        with st.expander("Occupancy Model", expanded=True):
+            _json_if_exists(model_path)
+
+    if not states_df.empty:
+        st.subheader("State Timeline")
+        st.dataframe(states_df.tail(100), use_container_width=True, hide_index=True)
+        if {"timestamp_start", "confidence"}.issubset(states_df.columns):
+            chart_df = states_df[["timestamp_start", "confidence"]].copy()
+            chart_df["timestamp_start"] = chart_df["timestamp_start"].astype(str)
+            st.line_chart(chart_df, x="timestamp_start", y="confidence")
+    elif not features_df.empty:
+        st.info("Feature rows exist, but no live occupancy states have been written yet.")
+
+    if not features_df.empty:
+        st.subheader("Feature Review")
+        numeric_candidates = [
+            "rssi_avg_dbm",
+            "rssi_std_db",
+            "snr_avg_db",
+            "visible_bssid_count",
+            "motion_score",
+            "rssi_recent_std_db",
+            "recent_motion_score",
+        ]
+        available = [col for col in numeric_candidates if col in features_df.columns]
+        selected = st.multiselect("Feature traces", available, default=available[:3], key="presence_features")
+        if selected and "timestamp_start" in features_df.columns:
+            chart_df = features_df[["timestamp_start"] + selected].copy()
+            chart_df["timestamp_start"] = chart_df["timestamp_start"].astype(str)
+            st.line_chart(chart_df, x="timestamp_start", y=selected)
+        st.dataframe(features_df.tail(100), use_container_width=True, hide_index=True)
+
+    if not events_df.empty:
+        st.subheader("Motion Events")
+        st.dataframe(events_df.tail(100), use_container_width=True, hide_index=True)
+
+    if not labels_df.empty and not states_df.empty:
+        st.subheader("Validation Summary")
+        validation = labels_df[labels_df["label"] == "validation"]
+        if validation.empty:
+            st.info("No validation block labels found yet.")
+        else:
+            merged = validation.merge(states_df, on="window_id", how="left", suffixes=("_label", "_state"))
+            st.dataframe(merged, use_container_width=True, hide_index=True)
+
+    st.subheader("HP Commands")
+    st.code(
+        "./scripts/run_presence_tripwire.sh "
+        f"--project {project_dir} --session {session_id} --interface wlan1 "
+        "--label-block vacant --block-seconds 300"
+    )
+    st.code(
+        "./scripts/run_presence_tripwire.sh "
+        f"--project {project_dir} --session {session_id} --interface wlan1 "
+        "--label-block occupied_still --block-seconds 300"
+    )
+    st.code(
+        "./scripts/run_presence_tripwire.sh "
+        f"--project {project_dir} --session {session_id} --interface wlan1 "
+        "--monitor --occupancy-monitor"
+    )
+
+
 def _render_hp_commands(project_dir: Path):
     st.subheader("Transfer and Collect on HP")
     st.write("Copy the project to the HP, collect sessions there, then sync `survey_sessions` back.")
@@ -357,6 +465,21 @@ def _render_hp_commands(project_dir: Path):
     st.code(
         "rsync -av user@hp-laptop:~/wifi-survey/"
         f"{project_dir}/survey_sessions/ {project_dir}/survey_sessions/"
+    )
+    st.write("For occupancy training, sync `presence_sessions` too.")
+    st.code(
+        "rsync -av user@hp-laptop:~/wifi-survey/"
+        f"{project_dir}/presence_sessions/ {project_dir}/presence_sessions/"
+    )
+    st.code(
+        "./scripts/run_presence_tripwire.sh "
+        f"--project {project_dir} --session home_occupancy --interface wlan1 "
+        "--label-block vacant --block-seconds 300"
+    )
+    st.code(
+        "./scripts/run_presence_tripwire.sh "
+        f"--project {project_dir} --session home_occupancy --interface wlan1 "
+        "--monitor --occupancy-monitor"
     )
     st.caption("On the HP, use `python3 hp_collector/collector_launcher.py` for the button-style launcher.")
 
@@ -377,6 +500,7 @@ def main():
         "Heatmaps",
         "Compare Sessions",
         "Optimize Placement",
+        "Presence/Occupancy",
         "Results",
         "HP Transfer/Collect",
     ])
@@ -391,8 +515,10 @@ def main():
     with tabs[4]:
         _render_optimizer(project_dir, paths, session_ids)
     with tabs[5]:
-        _render_results(project_dir)
+        _render_presence_occupancy(project_dir)
     with tabs[6]:
+        _render_results(project_dir)
+    with tabs[7]:
         _render_hp_commands(project_dir)
 
 

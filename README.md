@@ -1,334 +1,228 @@
-# Wi-Fi Apartment Survey
+# PresenceMap
 
-A practical site-survey tool for mapping Wi-Fi signal strength across an apartment. Walk the apartment, click on a floorplan view to capture RSSI at each position, then generate interpolated heatmaps on your Mac.
+PresenceMap is a local-first RF sensing experiment for exploring whether ordinary
+Wi-Fi observations can support motion detection, room presence, and lightweight
+automation/security workflows.
 
-**v1 covers:** image-import floorplan preparation, room/router/walk labeling, HP Ubuntu field collector, Mac heatmap generation, session comparison, and path-loss placement suggestions.  
-**Deferred to later:** GLB/3D conversion, material-aware RF modeling, automated reports.
+This project is forked from HeatMap and intentionally keeps the same core stack:
 
----
+- HP Linux machine for field collection
+- External Atheros Wi-Fi adapter
+- Python collector and analysis tools
+- CSV/event-log pipeline
+- Mac-side Streamlit dashboards
+- Floorplan, room, and session metadata
 
-## Mac setup
+The goal is different from HeatMap. HeatMap maps Wi-Fi quality to choose access
+point placement. PresenceMap watches how Wi-Fi observations change over time and
+tries to infer events such as movement through a doorway, room occupancy, and
+vacancy.
 
-```bash
-cd wifi-apartment-survey
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-mac.txt
+## Hardware Target
+
+Initial setup:
+
+- Netgear Nighthawk router
+- Netgear Nighthawk node
+- HP Linux computer
+- External Atheros network interface
+- MacBook M1 Max Pro for analysis and dashboard work
+
+## First Hypothesis
+
+The first realistic milestone is a Wi-Fi tripwire:
+
+1. Establish a stable baseline across a doorway, hallway, or room boundary.
+2. Continuously sample RSSI, SNR, bitrate, MCS, channel, and visible BSSIDs.
+3. Detect short-window changes that look like a body crossing the RF path.
+4. Log motion events with confidence and timestamps.
+5. Review those events on a Mac dashboard.
+
+Whole-apartment room occupancy is a second milestone. It may be possible to infer
+coarse presence with careful calibration, but it should be treated as a
+confidence-scored estimate rather than precise tracking.
+
+## Project Direction
+
+PresenceMap will evolve the original HeatMap workflow in three phases:
+
+### Phase 1: Continuous Collection
+
+- Add an HP-side continuous collector.
+- Record time-series RF observations instead of click-based survey points.
+- Keep the existing interface discovery, `iw`/`nmcli` support, project config,
+  floorplan, room metadata, and CSV writer patterns.
+
+### Phase 2: Motion and Presence Scoring
+
+- Build baseline profiles for vacant, occupied, and movement states.
+- Compute rolling-window deltas and variance.
+- Emit event rows such as `motion`, `occupied`, `vacant`, and `unknown`.
+- Keep results explainable before trying any heavier modeling.
+
+### Phase 3: Automation Hooks
+
+- Publish events to MQTT, Home Assistant webhooks, or a local API.
+- Support rules such as turning on lights when confidence crosses a threshold.
+- Keep an auditable event log for security-context experiments.
+
+## Current Status
+
+This repo now contains the inherited HeatMap survey workflow plus a first
+PresenceMap prototype for headless HP-side tripwire collection.
+
+## HP Presence Tripwire Prototype
+
+The prototype collector runs on the HP Linux machine with the external Atheros
+adapter. It reuses `hp_collector/wifi_scan.py` for `iw`/`nmcli` scanning, then
+writes a continuous raw log and a motion-event log under the selected project:
+
+```text
+survey_projects/<project>/presence_sessions/<session>/
+  presence_raw.csv
+  presence_events.csv
+  presence_baseline.json
 ```
 
-## HP Ubuntu setup
+`presence_raw.csv` contains every observed BSSID row from each scan window,
+including RSSI, channel, link RSSI/SNR/bitrate/MCS fields when available, plus
+window-level tripwire metadata. `presence_events.csv` contains thresholded
+`motion` events with confidence scores and baseline deltas. This is coarse RF
+motion sensing only; it does not identify people.
+
+### HP Linux Setup
+
+On the HP, install system tools and Python dependencies from the repo root:
 
 ```bash
-cd wifi-apartment-survey
+sudo apt update
+sudo apt install network-manager iw python3-venv
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-hp.txt
-# Wi-Fi tools (nmcli, iw) and Qt platform plugin libs are system packages.
-sudo apt install network-manager iw \
-    qtwayland5 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0
 ```
 
-The `qtwayland5` / `libxcb-*` packages are what PyQt5 needs to attach to your
-Ubuntu session (Wayland *or* Xorg). Without them you'll see
-`Could not load the Qt platform plugin` / `Aborted (core dumped)` at launch.
-
----
-
-## Step-by-step workflow
-
-### Preferred Mac control panel
-
-Most Mac-side setup and analysis can be run from one dashboard:
+Plug in the Atheros adapter and find its interface name:
 
 ```bash
-streamlit run mac_analysis/survey_dashboard.py -- --project survey_projects/apartment_test
+iw dev
+nmcli device status
 ```
 
-The dashboard checks project readiness, links setup commands, generates heatmaps,
-compares sessions, runs placement optimization, displays generated results, and
-shows HP transfer/collector commands. The individual scripts below remain useful
-for manual or advanced runs.
+The examples below use `wlan1`; replace it with the detected Atheros interface.
+For the default `iw` backend, the scanner invokes `sudo iw dev <iface> scan`, so
+run from a terminal where `sudo` is available.
 
-### Step 1 — Import the floorplan (Mac)
+### Calibrate a Baseline
 
-Put a photo or blueprint image in `floorplans/raw/`, then run:
-
-```bash
-streamlit run mac_analysis/floorplan_import.py -- --project survey_projects/apartment_test
-```
-
-Crop, rotate, and measure one known wall to set `scale_pixels_per_foot`. The scale is optional for basic heatmaps but required for path-loss placement optimization. Click **Save** → generates:
-- `survey_projects/apartment_test/floorplan.png`
-- `survey_projects/apartment_test/floorplan_metadata.json`
-
-### Step 2 — Label rooms and router positions (Mac)
+Place the HP and adapter in the intended tripwire position, keep the doorway or
+room boundary vacant, then collect a baseline:
 
 ```bash
-streamlit run mac_analysis/floorplan_labeler.py -- --project survey_projects/apartment_test
-```
-
-- **Rooms tab:** draw polygon outlines around each room, fill in IDs and names, click Save.
-- **Router Positions tab:** click to place router/AP candidate dots, fill in IDs and names, click Save.
-- **Walk Template tab:** click ordered survey waypoints so each router trial can use the same walk path.
-- **Project Config tab:** set target SSID, BSSID (optional), default Wi-Fi interface, scan backend, click Save.
-
-Generates: `rooms.json`, `router_positions.json`, `walk_waypoints.json`, `project_config.json`.
-
-### Step 3 — Transfer the project to the HP
-
-```bash
-# From Mac:
-rsync -av survey_projects/apartment_test/ user@hp-laptop:~/wifi-survey/survey_projects/apartment_test/
-```
-
-Or copy the `survey_projects/apartment_test/` folder via USB.
-
-### Step 4 — Sanity-check Wi-Fi scanning (HP)
-
-Run the preflight check (uses `project_config.json` for interface, SSID, and scan backend):
-
-```bash
-python3 hp_collector/preflight.py --project survey_projects/apartment_test
-```
-
-Or override settings manually:
-
-```bash
-python3 hp_collector/preflight.py \
+./scripts/run_presence_tripwire.sh \
   --project survey_projects/apartment_test \
+  --session front_door_tripwire \
   --interface wlan1 \
-  --ssid "YourNetworkName"
+  --calibrate \
+  --baseline-seconds 120 \
+  --location-label front_door
 ```
 
-Preflight verifies the adapter exists, the link is UP, rfkill is not blocking, and a trial scan finds your target SSID. Exit code 0 means you are ready to survey.
+This writes `presence_baseline.json` and also appends calibration observations
+to `presence_raw.csv`. Recalibrate whenever the adapter, router/node placement,
+target SSID/BSSID, or tripwire location changes.
 
-The default backend is `iw`, which reads real RSSI in dBm. When the laptop is connected to the target AP, collection also records `iw link` stats such as SNR, TX/RX bitrate, and MCS. Passive scans still collect neighbor BSS rows for co-channel interference scoring.
+### Run Continuous Monitoring
 
-For deeper debugging, collect sample RSSI readings:
+After calibration, run the headless monitor:
 
 ```bash
-python3 hp_collector/wifi_scan.py --interface wlan1 --ssid "YourNetworkName" --samples 5
+./scripts/run_presence_tripwire.sh \
+  --project survey_projects/apartment_test \
+  --session front_door_tripwire \
+  --interface wlan1 \
+  --monitor
 ```
 
-### Step 5 — Run the field collector (HP)
-
-Button-style launcher:
+Useful tuning flags:
 
 ```bash
-python3 hp_collector/collector_launcher.py --project survey_projects/apartment_test
+--samples-per-window 5      # scans per scoring window
+--window-seconds 5          # approximate cadence
+--threshold 2.5             # higher is less sensitive
+--cooldown-seconds 10       # minimum spacing between event rows
+--backend auto              # try iw, then nmcli fallback
+--bssid aa:bb:cc:dd:ee:ff  # lock tripwire to one AP/router/node
 ```
 
-The launcher can run preflight, launch the collector, and show command output in
-one window. It still uses the robust shell launcher below for the actual collector
-startup.
+For a short smoke test without leaving it running:
 
 ```bash
-./scripts/run_collector.sh --project survey_projects/apartment_test
+./scripts/run_presence_tripwire.sh \
+  --project survey_projects/apartment_test \
+  --session front_door_tripwire \
+  --interface wlan1 \
+  --monitor \
+  --max-windows 3
 ```
 
-The wrapper runs Wi-Fi preflight first (same checks as Step 4), then auto-detects
-whether your session is Wayland or Xorg, sets `QT_QPA_PLATFORM` accordingly,
-falls back to the other plugin once on failure, and prints the exact `apt install`
-line if any Qt runtime libs are missing.
+### Train Whole-Home Occupancy
 
-The collector blocks floorplan clicks until preflight passes. Use **Re-check Wi-Fi**
-in the sidebar after fixing hardware issues.
-
-Running `python3 hp_collector/collector_app.py --project ...` directly also
-works — the app performs the same auto-detection — but the wrapper gives you
-the venv activation and apt-package probe for free.
-
-On Linux, install an application-menu launcher:
+Whole-home occupancy is trained from guided labeled blocks. Start with a vacant
+home block, then collect occupied-still and occupied-moving blocks in the same
+presence session:
 
 ```bash
-bash scripts/install_collector_launcher.sh
+./scripts/run_presence_tripwire.sh \
+  --project survey_projects/apartment_test \
+  --session home_occupancy \
+  --interface wlan1 \
+  --label-block vacant \
+  --block-seconds 300
+
+./scripts/run_presence_tripwire.sh \
+  --project survey_projects/apartment_test \
+  --session home_occupancy \
+  --interface wlan1 \
+  --label-block occupied_still \
+  --block-seconds 300
+
+./scripts/run_presence_tripwire.sh \
+  --project survey_projects/apartment_test \
+  --session home_occupancy \
+  --interface wlan1 \
+  --label-block occupied_moving \
+  --block-seconds 300
 ```
 
-- Select router position and session name in the left panel.
-- Leave scan backend on `iw` unless you need `auto`/`nmcli` fallback.
-- If you created a walk template, the collector shows numbered waypoint dots on the floorplan. Keep **Guided walk waypoint snap** enabled to highlight the next stop and click within about 40 px of that highlighted waypoint.
-- Left-click on the floorplan where you're standing.
-- Wait for the status banner to show **Saved** (or **Partial scan** if some samples failed).
-  Failed clicks are not saved — the dot is removed and the banner shows the error.
-- Walk to the next spot, repeat. Use **Undo** if you misclick.
-- Close the app when done — all data is flushed to disk after every click.
-
-### Step 6 — Transfer measurements back to Mac
-
-```bash
-# From Mac:
-rsync -av user@hp-laptop:~/wifi-survey/survey_projects/apartment_test/survey_sessions/ \
-    survey_projects/apartment_test/survey_sessions/
-```
-
-### Step 7 — Generate heatmaps (Mac)
-
-Dashboard path: open the **Heatmaps** tab and click **Generate Heatmaps**.
-
-Manual fallback:
-
-```bash
-python3 mac_analysis/heatmap_generator.py \
-    --project survey_projects/apartment_test \
-    --session baseline_current_router \
-    --output-dir output/heatmaps
-```
-
-Produces three images in `output/heatmaps/`:
-- `baseline_current_router_points.png` — colored scatter plot of measurement points
-- `baseline_current_router_heatmap.png` — interpolated RSSI heatmap with colorbar
-- `baseline_current_router_weak_zones.png` — highlights areas below −70 dBm
-
-### Step 8 — Compare router placement trials (Mac)
-
-After surveying the apartment once per router candidate (three sessions, three walks):
-
-Dashboard path: open **Compare Sessions**, select the trials, and click **Run Comparison**.
-
-Manual fallback:
-
-```bash
-python3 mac_analysis/session_compare.py \
-    --project survey_projects/apartment_test \
-    --sessions trial_pos1,trial_pos2,trial_pos3 \
-    --output-dir output/comparison \
-    --export-heatmaps
-```
-
-Omit `--sessions` to compare every session under `survey_sessions/`. Outputs:
-
-- `comparison_metrics.csv` — point stats, stability (RSSI std), SNR/link rate, neighbor interference proxy, interpolated area coverage, composite score
-- `comparison_by_room.csv` — per-room breakdown per trial
-- `walk_pairs.csv` — matched point pairs across sessions when a walk template or nearest-neighbor matching is available
-- `comparison_ranking.png` — recommended router position ranking
-- `comparison_bars.png` — coverage, worst-case, and stability side-by-side
-- `comparison_matched_walk_deltas.png` — paired RSSI deltas at the same walk locations
-- `comparison_best_vs_worst.png` — interpolated RSSI difference (best trial minus worst)
-- `heatmaps/` — per-session heatmaps when `--export-heatmaps` is set
-
-Use the same walk pattern (similar click positions) across trials so comparisons reflect router location, not different paths.
-
-### Step 9 — Suggest new AP coordinates (Mac)
-
-After at least three router-position trials and a calibrated floorplan scale:
-
-Dashboard path: open **Optimize Placement**, select the training sessions, and click **Run Placement Optimizer**.
-
-Manual fallback:
-
-```bash
-python3 mac_analysis/placement_optimizer.py \
-    --project survey_projects/apartment_test \
-    --sessions trial_pos1,trial_pos2,trial_pos3 \
-    --output-dir output/placement
-```
-
-Outputs:
-
-- `model_params.json` — fitted path-loss exponent, cross-room penalty, RMSE
-- `placement_recommendation.json` — ranked suggested coordinates beyond labeled router positions
-- `predicted_coverage_rank1.png` — predicted heatmap for the top suggested AP location
-
----
-
-## Data layout
-
-```
-survey_projects/apartment_test/
-  project_config.json          # SSID, interface, paths
-  floorplan.png                # prepared floorplan image
-  floorplan_metadata.json      # size, scale, source info
-  rooms.json                   # room polygons and labels
-  router_positions.json        # AP candidate positions
-  walk_waypoints.json          # optional matched-walk survey points
-  output/                      # dashboard-generated heatmaps, comparisons, optimizer results
-  survey_sessions/
-    baseline_current_router/
-      measurements_raw.csv     # one row per BSSID per scan
-      measurements_summary.csv # one row per click point
-```
-
----
-
-## Troubleshooting
-
-**Collector exits with `Could not load the Qt platform plugin` / `Failed to create wl_display` / `Aborted (core dumped)`:**
-
-The Qt platform plugin can't attach to your display server. Two causes:
-
-1. *Wrong plugin for the session.* Wayland sessions need `QT_QPA_PLATFORM=wayland`; Xorg sessions need `xcb`. The wrapper script picks the right one automatically:
-
-   ```bash
-   ./scripts/run_collector.sh --project survey_projects/apartment_test
-   ```
-
-2. *Missing native libs.* Install the full Qt platform support set:
-
-   ```bash
-   sudo apt install qtwayland5 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0
-   ```
-
-For a verbose diagnostic, prefix the command with `QT_DEBUG_PLUGINS=1`. If you're on SSH, you must use `ssh -X` (and have `xauth` installed) to forward the display.
-
-**No Wi-Fi interfaces listed in the collector app:**
-```bash
-nmcli device         # list all network devices
-iw dev               # alternative
-```
-The interface is usually `wlan0` or `wlan1`. Edit the interface field in the app sidebar.
-
-**`iw error: Network is down (-100)` or preflight reports interface DOWN:**
-
-The USB Wi-Fi adapter exists in config but the kernel link is down. On the HP:
-
-```bash
-ip link show <your-interface>    # e.g. wlxc01c304311fe
-rfkill list
-sudo rfkill unblock wifi
-sudo ip link set <your-interface> up
-python3 hp_collector/preflight.py --project survey_projects/apartment_test
-```
-
-Common causes: adapter unplugged after sleep, rfkill soft-block, or wrong interface name after reboot.
-
-**`iw` asks for a sudo password or preflight cannot scan unattended:**  
-`iw scan` often requires root. For field collection, configure passwordless sudo for the exact `iw` binary on the HP:
-
-```bash
-which iw
-sudo visudo
-```
-
-Add a narrow rule for your user and adapter host, using the path from `which iw`:
+This writes feature, label, and model artifacts beside the tripwire logs:
 
 ```text
-your_linux_user ALL=(root) NOPASSWD: /usr/sbin/iw
+survey_projects/<project>/presence_sessions/<session>/
+  presence_features.csv
+  presence_labels.csv
+  presence_states.csv
+  presence_model.json
 ```
 
-Then re-run:
+Run conservative live occupancy scoring after the model has both vacant and
+occupied examples:
 
 ```bash
-python3 hp_collector/preflight.py --project survey_projects/apartment_test --backend iw
+./scripts/run_presence_tripwire.sh \
+  --project survey_projects/apartment_test \
+  --session home_occupancy \
+  --interface wlan1 \
+  --monitor \
+  --occupancy-monitor
 ```
 
-**Need nmcli fallback:**  
-Use `--backend auto` or select `auto` in the collector sidebar.
+The live state stream is intentionally conservative. It can emit `unknown` when
+the RF evidence is weak or mixed, and it does not identify people.
 
-**`floorplan.png` missing error in collector app:**  
-Run `floorplan_import.py` on the Mac first and transfer the project folder to the HP.
+## Safety and Privacy
 
-**`rooms.json` missing error:**  
-Run `floorplan_labeler.py` on the Mac, draw at least one room polygon, and save.
-
-**Heatmap looks blurry / wrong shape:**  
-Increase measurement density — aim for at least 15–20 clicks spread across the space. The interpolation quality degrades with sparse data near room edges.
-
----
-
-## Limitations (v1)
-
-- RSSI measurements are highly variable; 10 samples per point reduces noise but does not eliminate it. Repeat surveys improve reliability.
-- `iw link` SNR, bitrate, and MCS only exist when the survey laptop is associated with the target AP. Passive scans still work without link stats.
-- Room polygon masking only applies if polygons are defined in `rooms.json`. Without polygons the heatmap interpolates across the entire image.
-- The placement optimizer is a fitted path-loss heuristic, not full material-aware ray tracing. Treat suggested coordinates as high-quality candidates to validate with another walk.
-- 3D RF modeling and per-wall material attenuation are deferred to a later version.
+PresenceMap should be treated as experimental sensing infrastructure. It should
+not be used as a sole security system, and any occupancy logging should be
+designed with clear local control, retention limits, and visibility into what is
+being stored.
