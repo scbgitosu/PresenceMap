@@ -22,6 +22,7 @@ import streamlit as st
 
 from mac_analysis.heatmap_generator import run_heatmap_generation
 from mac_analysis.placement_optimizer import optimize_placement
+from mac_analysis.presence_training import train_and_evaluate
 from mac_analysis.session_compare import run_session_comparison
 from shared.survey_metrics import DEFAULT_GOOD_DBM, DEFAULT_WEAK_DBM, discover_sessions
 from shared.utils import project_paths
@@ -46,6 +47,13 @@ def _project_output_dir(project_dir: Path) -> Path:
 def _status(label: str, ok: bool, detail: str = ""):
     icon = "OK" if ok else "Missing"
     st.write(f"**{label}:** {icon}{' - ' + detail if detail else ''}")
+
+
+def _write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
 
 
 def _image_if_exists(path: Path, caption: str | None = None):
@@ -73,7 +81,16 @@ def _session_selector(session_ids: list[str], *, key: str, multiselect: bool):
 
 
 def _render_overview(project_dir: Path, paths: dict, session_ids: list[str]):
-    st.subheader("Project Health")
+    st.subheader("PresenceMap Readiness")
+    cfg = _load_json(paths["project_config"], {})
+    _status("Presence config", paths["project_config"].exists(), str(paths["project_config"]))
+    _status("Target SSID", bool(cfg.get("target_ssid")), cfg.get("target_ssid", "needed for RF collection"))
+    _status("Default interface", bool(cfg.get("default_interface")), cfg.get("default_interface", "can also be set on HP"))
+    presence_root = project_dir / "presence_sessions"
+    presence_sessions = sorted(path.name for path in presence_root.iterdir() if path.is_dir()) if presence_root.exists() else []
+    _status("Presence sessions", bool(presence_sessions), f"{len(presence_sessions)} found")
+
+    st.subheader("Optional Floorplan Readiness")
     metadata = _load_json(paths["floorplan_metadata"], {})
     _status("Floorplan", paths["floorplan_png"].exists(), str(paths["floorplan_png"]))
     _status("Metadata", paths["floorplan_metadata"].exists(), str(paths["floorplan_metadata"]))
@@ -85,7 +102,7 @@ def _render_overview(project_dir: Path, paths: dict, session_ids: list[str]):
     _status("Rooms", paths["rooms_json"].exists(), str(paths["rooms_json"]))
     _status("Router positions", paths["router_positions_json"].exists(), str(paths["router_positions_json"]))
     _status("Walk waypoints", paths["walk_waypoints_json"].exists(), "optional but recommended")
-    _status("Survey sessions", bool(session_ids), f"{len(session_ids)} found")
+    _status("HeatMap survey sessions", bool(session_ids), f"{len(session_ids)} found")
 
     st.subheader("Detected Sessions")
     if session_ids:
@@ -99,11 +116,51 @@ def _render_overview(project_dir: Path, paths: dict, session_ids: list[str]):
 
 
 def _render_setup(project_dir: Path):
-    st.subheader("Setup Apps")
-    st.write("These setup steps still use the existing canvas-heavy Streamlit apps.")
+    st.subheader("Presence Room Experiment")
+    paths = project_paths(project_dir)
+    existing = _load_json(paths["project_config"], {})
+    with st.form("presence_quick_setup"):
+        project_name = st.text_input("Project name", value=existing.get("project_name", project_dir.name))
+        target_ssid = st.text_input("Target SSID", value=existing.get("target_ssid", ""))
+        target_bssid = st.text_input("Target BSSID (optional)", value=existing.get("target_bssid", ""))
+        default_interface = st.text_input("HP Wi-Fi interface", value=existing.get("default_interface", "wlan1"))
+        scan_backend = st.selectbox(
+            "Scan backend",
+            ["iw", "auto", "nmcli"],
+            index=["iw", "auto", "nmcli"].index(existing.get("scan_backend", "iw")) if existing.get("scan_backend", "iw") in ["iw", "auto", "nmcli"] else 0,
+        )
+        room_name = st.text_input("First room label", value="bedroom")
+        submitted = st.form_submit_button("Save Presence Config", type="primary")
+    if submitted:
+        config = {
+            "project_name": project_name,
+            "target_ssid": target_ssid,
+            "target_bssid": target_bssid,
+            "default_interface": default_interface,
+            "units": existing.get("units", "feet"),
+            "collection_mode": "presence_room_experiment",
+            "scan_backend": scan_backend,
+            "presence": {
+                "first_room_label": room_name,
+                "collector": "HP Linux laptop + AR9271",
+                "analysis": "MacBook training/review",
+                "webcam_role": "derived_ground_truth_labels",
+                "video_retention": "derived_labels_only",
+            },
+            "paths": {
+                "floorplan_png": str(paths["floorplan_png"]),
+                "rooms_json": str(paths["rooms_json"]),
+                "router_positions_json": str(paths["router_positions_json"]),
+            },
+        }
+        _write_json(paths["project_config"], config)
+        st.success(f"Saved Presence config to `{paths['project_config']}`")
+
+    st.subheader("Optional Floorplan")
+    st.write("Use these later if you want room outlines or map overlays. Presence collection does not require them.")
     st.code(f"streamlit run mac_analysis/floorplan_import.py -- --project {project_dir}")
     st.code(f"streamlit run mac_analysis/floorplan_labeler.py -- --project {project_dir}")
-    st.caption("Use floorplan import to measure one known wall before running placement optimization.")
+    st.caption("Floorplan scale is only required for HeatMap-style placement optimization.")
 
 
 def _render_heatmaps(project_dir: Path, session_ids: list[str]):
@@ -403,6 +460,19 @@ def _render_presence_occupancy(project_dir: Path):
         st.subheader("Label Coverage")
         label_counts = labels_df.groupby(["label", "occupancy_label"], dropna=False).size().reset_index(name="windows")
         st.dataframe(label_counts, use_container_width=True, hide_index=True)
+
+    train_disabled = features_df.empty or labels_df.empty
+    if st.button("Train / Evaluate Occupancy Model", type="primary", disabled=train_disabled, key="presence_train_eval_btn"):
+        try:
+            evaluation = train_and_evaluate(project=project_dir, session=session_id)
+        except Exception as e:
+            st.error(str(e))
+        else:
+            st.success("Training evaluation complete.")
+            st.json(evaluation)
+            st.rerun()
+    if train_disabled:
+        st.caption("Collect and sync feature plus label rows before training/evaluation.")
 
     if model_path.exists():
         with st.expander("Occupancy Model", expanded=True):

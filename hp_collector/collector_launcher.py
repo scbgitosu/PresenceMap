@@ -19,6 +19,7 @@ from PyQt5.QtCore import QProcess
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -70,6 +71,94 @@ class CollectorLauncher(QMainWindow):
         button_row.addWidget(open_btn)
         layout.addLayout(button_row)
 
+        presence_grp = QGroupBox("Bedroom Presence Training Rig")
+        presence_layout = QVBoxLayout(presence_grp)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Session:"))
+        self.presence_session_edit = QLineEdit("bedroom_v1")
+        row.addWidget(self.presence_session_edit)
+        row.addWidget(QLabel("Interface:"))
+        self.presence_interface_edit = QLineEdit("wlan1")
+        row.addWidget(self.presence_interface_edit)
+        row.addWidget(QLabel("Room:"))
+        self.presence_location_edit = QLineEdit("bedroom")
+        row.addWidget(self.presence_location_edit)
+        presence_layout.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Baseline seconds:"))
+        self.baseline_seconds_edit = QLineEdit("300")
+        row.addWidget(self.baseline_seconds_edit)
+        row.addWidget(QLabel("Training seconds:"))
+        self.training_seconds_edit = QLineEdit("1200")
+        row.addWidget(self.training_seconds_edit)
+        row.addWidget(QLabel("Validation seconds:"))
+        self.validation_seconds_edit = QLineEdit("600")
+        row.addWidget(self.validation_seconds_edit)
+        presence_layout.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Label source:"))
+        self.label_source_edit = QLineEdit("webcam_derived")
+        row.addWidget(self.label_source_edit)
+        row.addWidget(QLabel("Source detail:"))
+        self.label_source_detail_edit = QLineEdit("derived occupancy only; no continuous video retained")
+        row.addWidget(self.label_source_detail_edit)
+        presence_layout.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Collector placement:"))
+        self.collector_placement_edit = QLineEdit("HP + AR9271 fixed in bedroom")
+        row.addWidget(self.collector_placement_edit)
+        row.addWidget(QLabel("Router placement:"))
+        self.router_placement_edit = QLineEdit("router fixed in bedroom")
+        row.addWidget(self.router_placement_edit)
+        presence_layout.addLayout(row)
+
+        workflow_row = QHBoxLayout()
+        smoke_btn = QPushButton("Smoke Test")
+        smoke_btn.clicked.connect(self._presence_smoke_test)
+        workflow_row.addWidget(smoke_btn)
+
+        baseline_btn = QPushButton("1 Calibrate Vacant")
+        baseline_btn.clicked.connect(self._presence_calibrate)
+        workflow_row.addWidget(baseline_btn)
+
+        vacant_btn = QPushButton("2 Train Vacant")
+        vacant_btn.clicked.connect(lambda: self._presence_label_block("vacant", self._training_seconds()))
+        workflow_row.addWidget(vacant_btn)
+
+        still_btn = QPushButton("3 Train Occupied Still")
+        still_btn.clicked.connect(lambda: self._presence_label_block("occupied_still", self._training_seconds()))
+        workflow_row.addWidget(still_btn)
+
+        moving_btn = QPushButton("4 Train Occupied Moving")
+        moving_btn.clicked.connect(lambda: self._presence_label_block("occupied_moving", self._validation_seconds()))
+        workflow_row.addWidget(moving_btn)
+        presence_layout.addLayout(workflow_row)
+
+        validation_row = QHBoxLayout()
+        val_vacant_btn = QPushButton("5 Validate Vacant")
+        val_vacant_btn.clicked.connect(lambda: self._presence_label_block("validation_vacant", self._validation_seconds()))
+        validation_row.addWidget(val_vacant_btn)
+
+        val_occupied_btn = QPushButton("6 Validate Occupied")
+        val_occupied_btn.clicked.connect(lambda: self._presence_label_block("validation_occupied", self._validation_seconds()))
+        validation_row.addWidget(val_occupied_btn)
+
+        monitor_btn = QPushButton("Run Live Monitor")
+        monitor_btn.clicked.connect(self._presence_monitor)
+        validation_row.addWidget(monitor_btn)
+
+        stop_btn = QPushButton("Stop Running Step")
+        stop_btn.clicked.connect(self._stop_process)
+        validation_row.addWidget(stop_btn)
+        presence_layout.addLayout(validation_row)
+
+        presence_layout.addWidget(QLabel("Mac analysis after syncing: python3 mac_analysis/presence_training.py --project <project> --session <session>"))
+        layout.addWidget(presence_grp)
+
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setMinimumHeight(360)
@@ -80,8 +169,57 @@ class CollectorLauncher(QMainWindow):
     def _project(self) -> str:
         return self.project_edit.text().strip() or DEFAULT_PROJECT
 
+    def _presence_session(self) -> str:
+        return self.presence_session_edit.text().strip() or "bedroom_v1"
+
+    def _presence_interface(self) -> str:
+        return self.presence_interface_edit.text().strip() or "wlan1"
+
+    def _presence_location(self) -> str:
+        return self.presence_location_edit.text().strip() or "bedroom"
+
+    def _seconds(self, edit: QLineEdit, default: str) -> str:
+        value = edit.text().strip() or default
+        try:
+            seconds = max(1, int(float(value)))
+        except ValueError:
+            seconds = int(default)
+        edit.setText(str(seconds))
+        return str(seconds)
+
+    def _baseline_seconds(self) -> str:
+        return self._seconds(self.baseline_seconds_edit, "300")
+
+    def _training_seconds(self) -> str:
+        return self._seconds(self.training_seconds_edit, "1200")
+
+    def _validation_seconds(self) -> str:
+        return self._seconds(self.validation_seconds_edit, "600")
+
     def _append(self, text: str):
         self.output.append(text.rstrip())
+
+    def _run_process(self, program: str, arguments: list[str], label: str):
+        if self.process and self.process.state() != QProcess.NotRunning:
+            QMessageBox.information(self, label, "A step is already running. Stop it before starting another.")
+            return
+
+        self.process = QProcess(self)
+        self.process.setWorkingDirectory(str(REPO_ROOT))
+        self.process.setProgram(program)
+        self.process.setArguments(arguments)
+        self.process.readyReadStandardOutput.connect(self._read_stdout)
+        self.process.readyReadStandardError.connect(self._read_stderr)
+        self.process.finished.connect(self._collector_finished)
+        self._append(f"$ {program} {' '.join(arguments)}")
+        self.process.start()
+
+    def _stop_process(self):
+        if self.process and self.process.state() != QProcess.NotRunning:
+            self._append("[stop requested]")
+            self.process.terminate()
+        else:
+            self._append("[no running step]")
 
     def _browse_project(self):
         chosen = QFileDialog.getExistingDirectory(
@@ -94,7 +232,14 @@ class CollectorLauncher(QMainWindow):
 
     def _run_preflight(self):
         project = self._project()
-        cmd = [sys.executable, "hp_collector/preflight.py", "--project", project]
+        cmd = [
+            sys.executable,
+            "hp_collector/preflight.py",
+            "--project",
+            project,
+            "--interface",
+            self._presence_interface(),
+        ]
         self._append(f"$ {' '.join(cmd)}")
         try:
             result = subprocess.run(
@@ -117,21 +262,47 @@ class CollectorLauncher(QMainWindow):
             QMessageBox.warning(self, "Preflight", "Wi-Fi preflight failed. See output.")
 
     def _launch_collector(self):
-        if self.process and self.process.state() != QProcess.NotRunning:
-            QMessageBox.information(self, "Collector", "Collector is already running.")
-            return
-
         project = self._project()
         script = REPO_ROOT / "scripts" / "run_collector.sh"
-        self.process = QProcess(self)
-        self.process.setWorkingDirectory(str(REPO_ROOT))
-        self.process.setProgram(str(script))
-        self.process.setArguments(["--project", project])
-        self.process.readyReadStandardOutput.connect(self._read_stdout)
-        self.process.readyReadStandardError.connect(self._read_stderr)
-        self.process.finished.connect(self._collector_finished)
-        self._append(f"$ {script} --project {project}")
-        self.process.start()
+        self._run_process(str(script), ["--project", project], "Collector")
+
+    def _presence_base_args(self) -> list[str]:
+        return [
+            "--project",
+            self._project(),
+            "--session",
+            self._presence_session(),
+            "--interface",
+            self._presence_interface(),
+            "--location-label",
+            self._presence_location(),
+            "--collector-placement",
+            self.collector_placement_edit.text().strip(),
+            "--router-placement",
+            self.router_placement_edit.text().strip(),
+            "--webcam-placement",
+            f"{self._presence_location()} overview for derived labels only",
+            "--label-source",
+            self.label_source_edit.text().strip() or "webcam_derived",
+            "--label-source-detail",
+            self.label_source_detail_edit.text().strip() or "derived occupancy only; no continuous video retained",
+        ]
+
+    def _run_presence(self, extra_args: list[str], label: str):
+        script = REPO_ROOT / "scripts" / "run_presence_tripwire.sh"
+        self._run_process(str(script), self._presence_base_args() + extra_args, label)
+
+    def _presence_smoke_test(self):
+        self._run_presence(["--monitor", "--max-windows", "3"], "Presence smoke test")
+
+    def _presence_calibrate(self):
+        self._run_presence(["--calibrate", "--baseline-seconds", self._baseline_seconds()], "Presence calibration")
+
+    def _presence_label_block(self, label: str, seconds: str):
+        self._run_presence(["--label-block", label, "--block-seconds", seconds], f"Presence {label}")
+
+    def _presence_monitor(self):
+        self._run_presence(["--monitor", "--occupancy-monitor"], "Presence live monitor")
 
     def _read_stdout(self):
         if self.process:

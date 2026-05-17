@@ -11,7 +11,7 @@ This project is forked from HeatMap and intentionally keeps the same core stack:
 - Python collector and analysis tools
 - CSV/event-log pipeline
 - Mac-side Streamlit dashboards
-- Floorplan, room, and session metadata
+- Optional floorplan, room, and session metadata
 
 The goal is different from HeatMap. HeatMap maps Wi-Fi quality to choose access
 point placement. PresenceMap watches how Wi-Fi observations change over time and
@@ -51,7 +51,8 @@ PresenceMap will evolve the original HeatMap workflow in three phases:
 - Add an HP-side continuous collector.
 - Record time-series RF observations instead of click-based survey points.
 - Keep the existing interface discovery, `iw`/`nmcli` support, project config,
-  floorplan, room metadata, and CSV writer patterns.
+  project config and CSV writer patterns; floorplan metadata remains optional
+  context for dashboards and later map overlays.
 
 ### Phase 2: Motion and Presence Scoring
 
@@ -171,11 +172,38 @@ For a short smoke test without leaving it running:
   --max-windows 3
 ```
 
+### Presence-First Setup
+
+PresenceMap does not require a labeled floorplan before data collection. The
+minimum setup is a project config with target SSID and HP interface.
+
+On the Mac dashboard, open **Setup** and use **Presence Room Experiment**:
+
+```bash
+streamlit run mac_analysis/survey_dashboard.py -- --project survey_projects/apartment_test
+```
+
+Save the target SSID, HP Wi-Fi interface, scan backend, and first room label.
+Floorplan import/labeling is still available later, but it is optional for the
+bedroom occupancy workflow.
+
 ### Train Whole-Home Occupancy
 
 Whole-home occupancy is trained from guided labeled blocks. Start with a vacant
 home block, then collect occupied-still and occupied-moving blocks in the same
 presence session:
+
+For a button-driven workflow on the HP, launch:
+
+```bash
+python3 hp_collector/collector_launcher.py --project survey_projects/apartment_test
+```
+
+Use the **Bedroom Presence Training Rig** panel to set the session, interface,
+room, and durations once, then click through smoke test, calibration, training
+blocks, validation blocks, and live monitor. The Mac dashboard also has a
+one-click **Train / Evaluate Occupancy Model** button after `presence_sessions`
+has been synced back.
 
 ```bash
 ./scripts/run_presence_tripwire.sh \

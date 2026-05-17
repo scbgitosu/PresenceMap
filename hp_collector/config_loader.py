@@ -16,7 +16,14 @@ def _require(path: Path, hint: str):
         )
 
 
-def load_project(project_dir: Path) -> tuple:
+def _load_json_if_exists(path: Path, default):
+    if not path.exists():
+        return default
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_project(project_dir: Path, *, require_spatial: bool = True) -> tuple:
     """
     Load all project files. Returns (ProjectConfig, List[RoomLabel], List[RouterPosition], metadata).
     Raises FileNotFoundError with friendly messages for missing files.
@@ -25,23 +32,24 @@ def load_project(project_dir: Path) -> tuple:
 
     _require(
         paths["project_config"],
-        "run floorplan_labeler.py on the Mac first",
-    )
-    _require(
-        paths["floorplan_png"],
-        "run floorplan_import.py on the Mac first to generate a floorplan",
-    )
-    _require(
-        paths["rooms_json"],
-        "run floorplan_labeler.py on the Mac first to label rooms",
-    )
-    _require(
-        paths["router_positions_json"],
-        "run floorplan_labeler.py on the Mac to place router positions",
+        "create a PresenceMap project config from the dashboard or pass explicit --ssid/--interface values",
     )
 
-    with open(paths["project_config"], encoding="utf-8") as f:
-        cfg_data = json.load(f)
+    if require_spatial:
+        _require(
+            paths["floorplan_png"],
+            "optional for PresenceMap, required for HeatMap survey mode; run floorplan_import.py on the Mac first",
+        )
+        _require(
+            paths["rooms_json"],
+            "optional for PresenceMap, required for HeatMap survey mode; run floorplan_labeler.py on the Mac first",
+        )
+        _require(
+            paths["router_positions_json"],
+            "optional for PresenceMap, required for HeatMap survey mode; run floorplan_labeler.py on the Mac first",
+        )
+
+    cfg_data = _load_json_if_exists(paths["project_config"], {})
 
     config = ProjectConfig(
         project_name=cfg_data.get("project_name", ""),
@@ -54,8 +62,7 @@ def load_project(project_dir: Path) -> tuple:
         paths=cfg_data.get("paths", {}),
     )
 
-    with open(paths["rooms_json"], encoding="utf-8") as f:
-        rooms_data = json.load(f)
+    rooms_data = _load_json_if_exists(paths["rooms_json"], [])
 
     rooms: List[RoomLabel] = []
     for r in rooms_data:
@@ -67,8 +74,7 @@ def load_project(project_dir: Path) -> tuple:
             label_y=r.get("label_y"),
         ))
 
-    with open(paths["router_positions_json"], encoding="utf-8") as f:
-        router_data = json.load(f)
+    router_data = _load_json_if_exists(paths["router_positions_json"], [])
 
     routers: List[RouterPosition] = []
     for rp in router_data:
@@ -81,9 +87,6 @@ def load_project(project_dir: Path) -> tuple:
             notes=rp.get("notes", ""),
         ))
 
-    metadata = {}
-    if paths["floorplan_metadata"].exists():
-        with open(paths["floorplan_metadata"], encoding="utf-8") as f:
-            metadata = json.load(f)
+    metadata = _load_json_if_exists(paths["floorplan_metadata"], {})
 
     return config, rooms, routers, metadata

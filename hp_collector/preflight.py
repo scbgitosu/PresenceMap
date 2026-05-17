@@ -156,7 +156,7 @@ def main() -> int:
     args = parser.parse_args()
 
     project_dir = Path(args.project)
-    config, _, _, _ = load_project(project_dir)
+    config, _, _, _ = load_project(project_dir, require_spatial=False)
 
     interface = args.interface or config.default_interface
     ssid = args.ssid or config.target_ssid

@@ -833,7 +833,7 @@ def parse_args(argv: Optional[list[str]] = None):
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(message)s")
-    config, _rooms, _routers, _metadata = load_project(args.project)
+    config, _rooms, _routers, _metadata = load_project(args.project, require_spatial=False)
     args.interface = _resolve_interface(config, args.interface)
     args.ssid = args.ssid or config.target_ssid
     args.bssid = args.bssid if args.bssid is not None else (config.target_bssid or None)
