@@ -685,8 +685,10 @@ def run_monitor(args, config) -> None:
     states_path = session_dir / "presence_states.csv"
     baseline_path = Path(args.baseline_path) if args.baseline_path else default_baseline_path(session_dir)
     baseline = load_baseline(baseline_path) if baseline_path.exists() else None
-    if baseline is None and not args.occupancy_monitor:
+    if baseline is None and args.require_baseline:
         baseline = load_baseline(baseline_path)
+    if baseline is None:
+        logger.warning("no baseline found at %s; raw/features will be written without motion scoring", baseline_path)
     occupancy_model = None
     state_machine = None
     if args.occupancy_monitor:
@@ -797,6 +799,7 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument("--window-seconds", type=float, default=5.0, help="Approximate cadence between windows")
     parser.add_argument("--baseline-seconds", type=float, default=120.0)
     parser.add_argument("--baseline-path", default=None)
+    parser.add_argument("--require-baseline", action="store_true", help="Fail if monitor mode cannot load a baseline")
     parser.add_argument("--location-label", default="tripwire", help="Human label for this calibrated RF path")
     parser.add_argument("--threshold", type=float, default=2.5, help="Motion event threshold in baseline-normalized units")
     parser.add_argument("--cooldown-seconds", type=float, default=10.0)

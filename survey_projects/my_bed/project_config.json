@@ -9,7 +9,9 @@
   "presence": {
     "analysis": "MacBook training/review",
     "collector": "HP Linux laptop + AR9271",
+    "default_session": "bedroom_v1",
     "first_room_label": "master bed",
+    "hp_sync_target": "ubuntu@192.168.0.121:~/monitor/PresenceMap",
     "video_retention": "derived_labels_only",
     "webcam_role": "derived_ground_truth_labels"
   },

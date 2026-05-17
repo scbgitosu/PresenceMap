@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -56,6 +57,9 @@ class CollectorLauncher(QMainWindow):
         browse_btn = QPushButton("Browse")
         browse_btn.clicked.connect(self._browse_project)
         row.addWidget(browse_btn)
+        load_cfg_btn = QPushButton("Load Presence Config")
+        load_cfg_btn.clicked.connect(self._load_presence_config)
+        row.addWidget(load_cfg_btn)
         layout.addLayout(row)
 
         button_row = QHBoxLayout()
@@ -166,6 +170,7 @@ class CollectorLauncher(QMainWindow):
         layout.addWidget(self.output)
 
         self.resize(820, 520)
+        self._load_presence_config(quiet=True)
         self._update_presence_output_hint()
 
     def _project(self) -> str:
@@ -186,6 +191,52 @@ class CollectorLauncher(QMainWindow):
     def _update_presence_output_hint(self):
         if hasattr(self, "presence_output_label"):
             self.presence_output_label.setText(f"Output folder: {self._presence_output_dir()}")
+
+    def _project_path(self) -> Path:
+        project_path = Path(self._project())
+        return project_path if project_path.is_absolute() else REPO_ROOT / project_path
+
+    def _load_presence_config(self, quiet: bool = False):
+        project_path = self._project_path()
+        config_path = project_path / "project_config.json"
+        if not config_path.exists():
+            if not quiet:
+                self._append(f"[presence] No project_config.json found at {config_path}")
+            self._update_presence_output_hint()
+            return
+        try:
+            with open(config_path, encoding="utf-8") as handle:
+                config = json.load(handle)
+        except Exception as e:
+            self._append(f"[presence] Could not read {config_path}: {e}")
+            return
+
+        presence = config.get("presence", {})
+        if config.get("default_interface"):
+            self.presence_interface_edit.setText(config["default_interface"])
+        room_label = presence.get("first_room_label") or "bedroom"
+        self.presence_location_edit.setText(room_label)
+        if presence.get("default_session"):
+            self.presence_session_edit.setText(presence["default_session"])
+        else:
+            self.presence_session_edit.setText(f"{room_label}_v1")
+        if presence.get("label_source"):
+            self.label_source_edit.setText(presence["label_source"])
+        if presence.get("label_source_detail"):
+            self.label_source_detail_edit.setText(presence["label_source_detail"])
+        elif presence.get("video_retention"):
+            self.label_source_detail_edit.setText(f"{presence['video_retention']}; no continuous video retained")
+        if presence.get("collector_placement"):
+            self.collector_placement_edit.setText(presence["collector_placement"])
+        if presence.get("router_placement"):
+            self.router_placement_edit.setText(presence["router_placement"])
+
+        if not quiet:
+            room = self._presence_location()
+            session = self._presence_session(quiet=True)
+            iface = self._presence_interface()
+            self._append(f"[presence] Loaded config: room={room} session={session} interface={iface}")
+        self._update_presence_output_hint()
 
     def _presence_interface(self) -> str:
         return self.presence_interface_edit.text().strip() or "wlan1"
@@ -244,6 +295,7 @@ class CollectorLauncher(QMainWindow):
         )
         if chosen:
             self.project_edit.setText(chosen)
+            self._load_presence_config()
 
     def _run_preflight(self):
         project = self._project()

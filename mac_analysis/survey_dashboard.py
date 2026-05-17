@@ -131,6 +131,10 @@ def _render_setup(project_dir: Path):
                 "first_room_label": room_name,
                 "default_session": default_session,
                 "hp_sync_target": hp_target,
+                "label_source": "webcam_derived",
+                "label_source_detail": "derived occupancy only; no continuous video retained",
+                "collector_placement": f"HP + AR9271 fixed in {room_name}",
+                "router_placement": f"router fixed in {room_name}",
             },
             "paths": {
                 "floorplan_png": str(paths["floorplan_png"]),
