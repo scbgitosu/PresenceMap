@@ -6,6 +6,7 @@ adds a small baseline/event layer around it for HP-side unattended runs.
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import json
 import logging
@@ -725,6 +726,9 @@ def run_monitor(args, config) -> None:
     history = _read_csv_rows(features_path)
     window_number = _first_window_number(history, args.start_window)
     stop_after_window = window_number + args.max_windows if args.max_windows else None
+    status_counts = collections.Counter()
+    missing_samples = 0
+    target_samples = 0
     while not stop_requested:
         window_started = time.monotonic()
         window = collect_presence_window(
@@ -740,6 +744,9 @@ def run_monitor(args, config) -> None:
         )
         append_presence_raw(raw_path, window)
         append_health(health_path, window, interface=args.interface, backend=args.backend)
+        status_counts[window.status] += 1
+        missing_samples += int(_safe_float(window.summary.get("missing_sample_count")) or 0)
+        target_samples += max(1, args.samples_per_window)
         event = score_window(window, baseline, args.threshold) if baseline else None
         feature = extract_feature_row(window, history, motion_score=event.score if event else None)
         _append_feature(features_path, feature)
@@ -773,6 +780,24 @@ def run_monitor(args, config) -> None:
         if stop_after_window and window_number >= stop_after_window:
             break
         _sleep_until_next_window(window_started, args.window_seconds)
+
+    total_windows = sum(status_counts.values())
+    if total_windows:
+        usable_windows = status_counts.get("ok", 0) + status_counts.get("partial", 0)
+        logger.info(
+            "run summary windows=%s ok=%s partial=%s failed=%s missing_samples=%s/%s",
+            total_windows,
+            status_counts.get("ok", 0),
+            status_counts.get("partial", 0),
+            status_counts.get("failed", 0),
+            missing_samples,
+            target_samples,
+        )
+        if status_counts.get("failed", 0) or missing_samples > max(2, target_samples // 3):
+            logger.warning(
+                "scan reliability is weak; pause 30s, disable the internal Wi-Fi NIC if possible, "
+                "try backend=auto/nmcli, or unplug/replug the AR9271 if it stays busy"
+            )
 
 
 def _resolve_interface(config, requested: Optional[str]) -> str:

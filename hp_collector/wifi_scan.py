@@ -229,12 +229,18 @@ def scan_iw(
     Run iw Wi-Fi scan (may need sudo). Returns list of raw AP dicts.
     """
     cmd = ["sudo", "iw", "dev", interface, "scan"]
-    try:
-        out = subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE, timeout=30)
-    except FileNotFoundError:
-        raise RuntimeError("iw not found")
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"iw error: {e.stderr.strip()}")
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE, timeout=30)
+            break
+        except FileNotFoundError:
+            raise RuntimeError("iw not found")
+        except subprocess.CalledProcessError as e:
+            last_error = e.stderr.strip()
+            if "Device or resource busy" not in last_error or attempt == 3:
+                raise RuntimeError(f"iw error: {last_error}")
+            time.sleep(float(attempt))
 
     results = []
     current: dict = {}

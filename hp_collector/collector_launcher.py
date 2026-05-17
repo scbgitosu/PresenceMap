@@ -355,7 +355,22 @@ class CollectorLauncher(QMainWindow):
         self._run_process(str(script), self._presence_base_args() + extra_args, label)
 
     def _presence_smoke_test(self):
-        self._run_presence(["--monitor", "--max-windows", "3"], "Presence smoke test")
+        self._run_presence(
+            [
+                "--monitor",
+                "--max-windows",
+                "3",
+                "--backend",
+                "auto",
+                "--samples-per-window",
+                "3",
+                "--delay",
+                "1.0",
+                "--window-seconds",
+                "8",
+            ],
+            "Presence smoke test",
+        )
 
     def _presence_calibrate(self):
         self._run_presence(["--calibrate", "--baseline-seconds", self._baseline_seconds()], "Presence calibration")
