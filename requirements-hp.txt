@@ -3,3 +3,4 @@
 # ("HP Ubuntu setup") for the matching `sudo apt install ...` line.
 PyQt5>=5.15
 pandas>=2.0
+opencv-python-headless>=4.9
