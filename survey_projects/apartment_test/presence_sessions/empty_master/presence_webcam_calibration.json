@@ -1,0 +1,122 @@
+{
+  "all_samples": [
+    {
+      "brightness_avg": 52.797,
+      "debug_artifact": "",
+      "label": "vacant",
+      "label_source": "wizard_manual_visual_review",
+      "motion_ratio": 0.0,
+      "occupancy_label": "vacant",
+      "step": "empty_room",
+      "timestamp": "2026-05-18T01:24:23.430Z"
+    },
+    {
+      "brightness_avg": 40.099,
+      "debug_artifact": "",
+      "label": "occupied_still",
+      "label_source": "wizard_manual_visual_review",
+      "motion_ratio": 0.22375,
+      "occupancy_label": "occupied",
+      "step": "person_door",
+      "timestamp": "2026-05-18T01:24:42.657Z"
+    },
+    {
+      "brightness_avg": 99.77,
+      "debug_artifact": "",
+      "label": "vacant",
+      "label_source": "wizard_manual_visual_review",
+      "motion_ratio": 0.81161,
+      "occupancy_label": "vacant",
+      "step": "person_center",
+      "timestamp": "2026-05-18T01:25:01.058Z"
+    },
+    {
+      "brightness_avg": 51.774,
+      "debug_artifact": "",
+      "label": "occupied_still",
+      "label_source": "wizard_manual_visual_review",
+      "motion_ratio": 0.71262,
+      "occupancy_label": "occupied",
+      "step": "person_edge",
+      "timestamp": "2026-05-18T01:25:16.419Z"
+    }
+  ],
+  "calibration_mode": "wizard_manual_visual_review",
+  "camera_index": 0,
+  "created_at": "2026-05-18T01:25:16.419Z",
+  "empty_room": {
+    "samples": [
+      {
+        "brightness_avg": 52.797,
+        "debug_artifact": "",
+        "label": "vacant",
+        "label_source": "wizard_manual_visual_review",
+        "motion_ratio": 0.0,
+        "occupancy_label": "vacant",
+        "step": "empty_room",
+        "timestamp": "2026-05-18T01:24:23.430Z"
+      },
+      {
+        "brightness_avg": 99.77,
+        "debug_artifact": "",
+        "label": "vacant",
+        "label_source": "wizard_manual_visual_review",
+        "motion_ratio": 0.81161,
+        "occupancy_label": "vacant",
+        "step": "person_center",
+        "timestamp": "2026-05-18T01:25:01.058Z"
+      }
+    ],
+    "summary": {
+      "brightness_max": 99.77,
+      "brightness_mean": 76.284,
+      "brightness_min": 52.797,
+      "motion_max": 0.81161,
+      "motion_mean": 0.40581,
+      "sample_count": 2,
+      "unknown_count": 0
+    }
+  },
+  "person_present": {
+    "samples": [
+      {
+        "brightness_avg": 40.099,
+        "debug_artifact": "",
+        "label": "occupied_still",
+        "label_source": "wizard_manual_visual_review",
+        "motion_ratio": 0.22375,
+        "occupancy_label": "occupied",
+        "step": "person_door",
+        "timestamp": "2026-05-18T01:24:42.657Z"
+      },
+      {
+        "brightness_avg": 51.774,
+        "debug_artifact": "",
+        "label": "occupied_still",
+        "label_source": "wizard_manual_visual_review",
+        "motion_ratio": 0.71262,
+        "occupancy_label": "occupied",
+        "step": "person_edge",
+        "timestamp": "2026-05-18T01:25:16.419Z"
+      }
+    ],
+    "summary": {
+      "brightness_max": 51.774,
+      "brightness_mean": 45.936,
+      "brightness_min": 40.099,
+      "motion_max": 0.71262,
+      "motion_mean": 0.46819,
+      "sample_count": 2,
+      "unknown_count": 0
+    }
+  },
+  "privacy": {
+    "debug_thumbnails_enabled": false,
+    "stores_continuous_video": false
+  },
+  "session_id": "empty_master",
+  "thresholds": {
+    "recommended_motion_threshold": 0.6399
+  },
+  "version": 1
+}
