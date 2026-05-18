@@ -30,7 +30,11 @@ def infer_room(x: float, y: float, rooms: List[RoomLabel]) -> Optional[RoomLabel
 
 def now_iso() -> str:
     """Return current UTC time as ISO 8601 string with millisecond precision."""
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        + "Z"
+    )
 
 
 def px_to_ft(distance_px: float, metadata: dict) -> float:

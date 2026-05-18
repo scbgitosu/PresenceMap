@@ -93,6 +93,42 @@ def _cmd_api(_args: argparse.Namespace) -> int:
     return 64
 
 
+def _cmd_train(args: argparse.Namespace) -> int:
+    from mac_app.train.features import DatasetSpec
+    from mac_app.train.train import TrainConfig, train_session
+
+    spec = DatasetSpec(sequence_length=args.T)
+    cfg = TrainConfig(
+        epochs=args.epochs,
+        batch_size=args.batch,
+        val_fraction=args.val_fraction,
+        device=args.device,
+    )
+
+    def _on_epoch(epoch, h):
+        print(
+            f"epoch {epoch:>3}  "
+            f"train_loss={h.train_loss[-1]:.4f}  train_acc={h.train_acc[-1]:.3f}  "
+            f"val_loss={h.val_loss[-1]:.4f}  val_acc={h.val_acc[-1]:.3f}"
+        )
+
+    try:
+        meta = train_session(args.project, args.session, spec=spec, cfg=cfg, on_epoch=_on_epoch)
+    except Exception as exc:
+        print(f"training failed: {exc}", file=sys.stderr)
+        return 1
+    print("=" * 60)
+    print(f"saved model: {meta.model_id}")
+    s = meta.eval_summary
+    print(
+        f"acc={s['accuracy']:.3f} prec={s['precision']:.3f} "
+        f"recall={s['recall']:.3f} f1={s['f1']:.3f}"
+    )
+    print(f"confusion (rows=true, cols=pred): {s['confusion']}")
+    print(f"artifacts: {meta.model_dir}")
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(prog="presence-mac")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -110,6 +146,16 @@ def main(argv: Optional[list] = None) -> int:
 
     p = sub.add_parser("api", help="(Stage 6) launch the FastAPI live state service")
     p.set_defaults(func=_cmd_api)
+
+    p = sub.add_parser("train", help="train a TemporalCSIModel on one or more recorded sessions")
+    p.add_argument("--project", required=True, help="path to project directory")
+    p.add_argument("--session", required=True, nargs="+", help="one or more v2 session ids")
+    p.add_argument("--epochs", type=int, default=30)
+    p.add_argument("--batch", type=int, default=64)
+    p.add_argument("--val-fraction", type=float, default=0.3)
+    p.add_argument("-T", "--T", dest="T", type=int, default=8, help="sequence length")
+    p.add_argument("--device", default=None, help="mps | cpu | cuda (default: mps if available)")
+    p.set_defaults(func=_cmd_train)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -28,6 +28,7 @@ from mac_app.dashboard.pages import (
     training_collect,
     training_review,
     training_setup,
+    training_train,
 )
 from mac_app.floorplan._cli import parse_streamlit_project_args
 
@@ -58,6 +59,7 @@ def main() -> None:
                     "Setup",
                     "Collect",
                     "Review",
+                    "Train",
                     "Models",
                     "Legacy Viewer",
                 ],
@@ -79,6 +81,8 @@ def main() -> None:
             training_collect.render(project_dir)
         elif page == "Review":
             training_review.render(project_dir)
+        elif page == "Train":
+            training_train.render(project_dir)
         elif page == "Models":
             models_browser.render(project_dir)
         elif page == "Legacy Viewer":
