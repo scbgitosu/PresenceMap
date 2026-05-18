@@ -7,9 +7,12 @@ Stages 4 and 6.
 from __future__ import annotations
 
 import argparse
+import os
 import signal
+import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from mac_app.transport.reconnect import Watchdog
@@ -64,9 +67,25 @@ def _cmd_transport_tap(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_dashboard(_args: argparse.Namespace) -> int:
-    print("dashboard lands in Stage 4 (`streamlit run mac_app/dashboard/app.py`)", file=sys.stderr)
-    return 64
+def _cmd_dashboard(args: argparse.Namespace) -> int:
+    repo_root = Path(__file__).resolve().parents[1]
+    entry = repo_root / "mac_app" / "dashboard" / "app.py"
+    if not entry.exists():
+        print(f"dashboard entry not found: {entry}", file=sys.stderr)
+        return 2
+    cmd = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(entry),
+        "--",
+        "--project",
+        str(args.project),
+    ]
+    env = os.environ.copy()
+    env.setdefault("PYTHONPATH", str(repo_root))
+    return subprocess.call(cmd, env=env)
 
 
 def _cmd_api(_args: argparse.Namespace) -> int:
@@ -85,7 +104,8 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--stall-after", type=float, default=6.0, help="seconds before declaring signal lost")
     p.set_defaults(func=_cmd_transport_tap)
 
-    p = sub.add_parser("dashboard", help="(Stage 4) launch the Streamlit dashboard")
+    p = sub.add_parser("dashboard", help="launch the Streamlit dashboard")
+    p.add_argument("--project", default="data/survey_projects/apartment_test")
     p.set_defaults(func=_cmd_dashboard)
 
     p = sub.add_parser("api", help="(Stage 6) launch the FastAPI live state service")
