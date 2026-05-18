@@ -17,10 +17,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PyQt5.QtCore import QProcess, QTimer
+from PyQt5.QtCore import QProcess, Qt, QTimer
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -34,9 +36,192 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from shared.utils import now_iso
+from shared.webcam_ground_truth import (
+    WEBCAM_CALIBRATION_VERSION,
+    recommend_motion_threshold,
+    summarize_calibration_samples,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROJECT = "survey_projects/apartment_test"
+
+
+class WebcamCalibrationWizard(QDialog):
+    def __init__(self, *, project_dir: Path, session_id: str, camera_index: int, save_debug: bool, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Webcam Occupancy Calibration")
+        self.project_dir = project_dir
+        self.session_id = session_id
+        self.camera_index = camera_index
+        self.save_debug = save_debug
+        self.session_dir = project_dir / "presence_sessions" / session_id
+        self.samples: list[dict] = []
+        self._frame = None
+        self._previous_gray = None
+        self._step_index = 0
+        self._steps = [
+            ("empty_room", "Make sure the room is empty, then capture and mark it."),
+            ("person_door", "Stand near the doorway or entry path, then capture and mark it."),
+            ("person_center", "Stand or sit in the main occupied area, then capture and mark it."),
+            ("person_edge", "Stand at an edge/low-confidence position, then capture and mark it."),
+        ]
+        self._build_ui()
+        self._capture_frame()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        self.instruction = QLabel("")
+        self.instruction.setWordWrap(True)
+        layout.addWidget(self.instruction)
+
+        self.preview = QLabel("No frame captured")
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumSize(640, 360)
+        layout.addWidget(self.preview)
+
+        button_row = QHBoxLayout()
+        recapture_btn = QPushButton("Recapture")
+        recapture_btn.clicked.connect(self._capture_frame)
+        button_row.addWidget(recapture_btn)
+
+        vacant_btn = QPushButton("Mark Vacant")
+        vacant_btn.clicked.connect(lambda: self._mark("vacant"))
+        button_row.addWidget(vacant_btn)
+
+        occupied_btn = QPushButton("Mark Occupied")
+        occupied_btn.clicked.connect(lambda: self._mark("occupied"))
+        button_row.addWidget(occupied_btn)
+
+        unknown_btn = QPushButton("Mark Unknown")
+        unknown_btn.clicked.connect(lambda: self._mark("unknown"))
+        button_row.addWidget(unknown_btn)
+        layout.addLayout(button_row)
+
+        finish_row = QHBoxLayout()
+        self.progress = QLabel("")
+        finish_row.addWidget(self.progress)
+        close_btn = QPushButton("Cancel")
+        close_btn.clicked.connect(self.reject)
+        finish_row.addWidget(close_btn)
+        layout.addLayout(finish_row)
+        self._update_instruction()
+
+    def _update_instruction(self):
+        step_name, text = self._steps[self._step_index]
+        self.instruction.setText(f"Step {self._step_index + 1}/{len(self._steps)}: {text}")
+        self.progress.setText(f"Samples marked: {len(self.samples)}")
+
+    def _capture_frame(self):
+        try:
+            import cv2  # type: ignore
+        except Exception as e:
+            QMessageBox.warning(self, "OpenCV", f"OpenCV is not available: {e}")
+            return
+
+        capture = cv2.VideoCapture(self.camera_index)
+        if not capture.isOpened():
+            QMessageBox.warning(self, "Camera", f"Could not open camera index {self.camera_index}.")
+            return
+        ok, frame = capture.read()
+        capture.release()
+        if not ok or frame is None:
+            QMessageBox.warning(self, "Camera", "Camera opened but did not return a frame.")
+            return
+
+        self._frame = frame
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channels = rgb.shape
+        image = QImage(rgb.data, width, height, channels * width, QImage.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(image).scaled(
+            self.preview.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.preview.setPixmap(pixmap)
+
+    def _mark(self, occupancy_label: str):
+        if self._frame is None:
+            QMessageBox.warning(self, "Calibration", "Capture a frame before marking this step.")
+            return
+        try:
+            import cv2  # type: ignore
+        except Exception as e:
+            QMessageBox.warning(self, "OpenCV", f"OpenCV is not available: {e}")
+            return
+
+        step_name, _text = self._steps[self._step_index]
+        gray = cv2.cvtColor(self._frame, cv2.COLOR_BGR2GRAY)
+        brightness = float(gray.mean())
+        motion_ratio = 0.0
+        if self._previous_gray is not None:
+            diff = cv2.absdiff(gray, self._previous_gray)
+            _threshold, changed = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+            motion_ratio = float((changed > 0).mean())
+        self._previous_gray = gray
+
+        debug_artifact = ""
+        if self.save_debug:
+            debug_dir = self.session_dir / "webcam_debug" / "calibration"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            debug_path = debug_dir / f"{step_name}_{len(self.samples) + 1:03d}.jpg"
+            if cv2.imwrite(str(debug_path), self._frame):
+                debug_artifact = str(debug_path.relative_to(self.session_dir))
+
+        self.samples.append({
+            "step": step_name,
+            "timestamp": now_iso(),
+            "occupancy_label": occupancy_label,
+            "label": "occupied_still" if occupancy_label == "occupied" else occupancy_label,
+            "brightness_avg": round(brightness, 3),
+            "motion_ratio": round(motion_ratio, 5),
+            "debug_artifact": debug_artifact,
+            "label_source": "wizard_manual_visual_review",
+        })
+
+        if self._step_index + 1 >= len(self._steps):
+            self._save()
+            self.accept()
+            return
+        self._step_index += 1
+        self._update_instruction()
+        self._capture_frame()
+
+    def _save(self):
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        empty_samples = [row for row in self.samples if row["occupancy_label"] == "vacant"]
+        occupied_samples = [row for row in self.samples if row["occupancy_label"] == "occupied"]
+        empty_summary = summarize_calibration_samples(empty_samples)
+        occupied_summary = summarize_calibration_samples(occupied_samples)
+        payload = {
+            "version": WEBCAM_CALIBRATION_VERSION,
+            "created_at": now_iso(),
+            "session_id": self.session_id,
+            "camera_index": self.camera_index,
+            "calibration_mode": "wizard_manual_visual_review",
+            "privacy": {
+                "stores_continuous_video": False,
+                "debug_thumbnails_enabled": self.save_debug,
+            },
+            "thresholds": {
+                "recommended_motion_threshold": recommend_motion_threshold(empty_summary, occupied_summary),
+            },
+            "empty_room": {
+                "summary": empty_summary,
+                "samples": empty_samples,
+            },
+            "person_present": {
+                "summary": occupied_summary,
+                "samples": occupied_samples,
+            },
+            "all_samples": self.samples,
+        }
+        path = self.session_dir / "presence_webcam_calibration.json"
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        QMessageBox.information(self, "Webcam Calibration", f"Saved calibration to {path}")
 
 
 class CollectorLauncher(QMainWindow):
@@ -475,19 +660,17 @@ class CollectorLauncher(QMainWindow):
     def _presence_webcam_calibrate(self):
         if not self.webcam_labels_check.isChecked():
             self.webcam_labels_check.setChecked(True)
-        expected = 15 + 6 * 3
-        self._run_presence(
-            [
-                "--webcam-calibrate",
-                "--webcam-calibration-prompt",
-                "--webcam-calibration-samples",
-                "3",
-                "--webcam-pose-delay-seconds",
-                "15",
-            ],
-            "Webcam calibration",
-            expected_seconds=expected,
+        wizard = WebcamCalibrationWizard(
+            project_dir=self._project_path(),
+            session_id=self._presence_session(),
+            camera_index=int(self._webcam_camera_index()),
+            save_debug=self.webcam_debug_check.isChecked(),
+            parent=self,
         )
+        if wizard.exec_() == QDialog.Accepted:
+            self._append("[presence] Webcam calibration wizard saved presence_webcam_calibration.json")
+        else:
+            self._append("[presence] Webcam calibration wizard canceled")
 
     def _presence_monitor(self):
         self._run_presence(["--monitor", "--occupancy-monitor"], "Presence live monitor")
