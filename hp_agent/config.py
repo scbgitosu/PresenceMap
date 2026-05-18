@@ -31,11 +31,17 @@ class AgentConfig:
     webcam_jpeg_quality: int = 75
     webcam_max_width: int = 640
     webcam_max_height: int = 480
-    # CSI (Stage 3 fills these in)
+    # CSI capture
     csi_enabled: bool = False
+    csi_source: str = "atheros"           # "atheros" | "fixture" | "udp"
     csi_channel: int = 6
     csi_bandwidth_mhz: int = 20
-    csi_recv_port: int = 9300
+    csi_num_subcarriers: int = 56          # 56 for HT20, 114 for HT40
+    csi_expected_frames_per_window: int = 60
+    csi_include_amp_matrix: bool = True    # blob raw amp matrix on the wire (training only)
+    csi_recv_port: int = 9300              # UDP port for stdout-streaming forks
+    csi_recv_binary: str = "recvCSI"       # subprocess binary name / path
+    csi_recv_binary_args: list = field(default_factory=list)
     # Transport
     publish_bind: str = "tcp://0.0.0.0:5555"   # windows + health
     frames_bind: str = "tcp://0.0.0.0:5556"    # frames

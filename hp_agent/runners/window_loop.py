@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import subprocess
 import threading
-import time
 from typing import Optional
 
+from hp_agent.capture.csi_features import aggregate_window_features
 from hp_agent.capture.rssi_iw import (
     RFSummary,
     read_noise_floor_dbm,
@@ -22,6 +22,7 @@ from hp_agent.capture.rssi_iw import (
 )
 from hp_agent.config import AgentConfig
 from hp_agent.health.heartbeat import HeartbeatEmitter
+from hp_agent.runners.csi_buffer import CSIBuffer
 from hp_agent.transport.messages import make_window_msg
 from hp_agent.transport.zmq_publisher import Publisher
 from hp_agent.util.logging import get_logger, log_event
@@ -38,12 +39,14 @@ class WindowLoop:
         *,
         session_id: str,
         phase: str = "freeform",
+        csi_buffer: Optional[CSIBuffer] = None,
     ) -> None:
         self.cfg = cfg
         self.publisher = publisher
         self.heartbeat = heartbeat
         self.session_id = session_id
         self.phase = phase
+        self.csi_buffer = csi_buffer
         self.stop_event = threading.Event()
         log_path = cfg.paths.get("sessions_dir", cfg.project_dir) / session_id / "agent.log.jsonl"
         self.log = get_logger("hp_agent.window_loop", session_log=log_path)
@@ -101,6 +104,7 @@ class WindowLoop:
                 "channel_utilization_proxy": summary.channel_utilization_proxy,
                 "target_seen": summary.target_seen,
             }
+            csi_payload = self._build_csi_payload()
             msg = make_window_msg(
                 agent_id=self.cfg.agent_id,
                 session_id=self.session_id,
@@ -109,14 +113,14 @@ class WindowLoop:
                 ts_end=ts_end,
                 phase=self.phase,
                 rssi=rssi_payload,
-                csi=None,  # filled in Stage 3
+                csi=csi_payload,
                 interface=self.cfg.interface,
-                backend="iw_scan",
+                backend="iw_scan+csi" if self.csi_buffer is not None else "iw_scan",
             )
             self.publisher.send_window(msg)
             self.heartbeat.record_window(
                 target_seen=summary.target_seen,
-                loss_ratio=1.0 if scan_error else 0.0,
+                loss_ratio=csi_payload["loss_ratio"] if csi_payload else (1.0 if scan_error else 0.0),
                 overrun_s=overrun,
                 scan_error=scan_error,
             )
@@ -125,3 +129,25 @@ class WindowLoop:
             if self.stop_event.is_set():
                 break
         log_event(self.log, "INFO", "window_loop stop", session_id=self.session_id, windows=self._n)
+
+    def _build_csi_payload(self) -> Optional[dict]:
+        if self.csi_buffer is None:
+            return None
+        frames = self.csi_buffer.drain()
+        include_amp = (
+            bool(self.cfg.csi_include_amp_matrix) and self.phase != "live"
+        )
+        feats, amp_blob, loss = aggregate_window_features(
+            frames,
+            expected_frames=self.cfg.csi_expected_frames_per_window,
+            num_subcarriers=self.cfg.csi_num_subcarriers,
+            include_amp_matrix=include_amp,
+        )
+        payload: dict = {
+            "features": feats,
+            "frames": len(frames),
+            "loss_ratio": loss,
+        }
+        if amp_blob is not None:
+            payload["amp_matrix_f16"] = amp_blob
+        return payload
