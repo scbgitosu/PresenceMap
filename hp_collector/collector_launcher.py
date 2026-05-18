@@ -12,13 +12,15 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PyQt5.QtCore import QProcess
+from PyQt5.QtCore import QProcess, QTimer
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -42,6 +44,11 @@ class CollectorLauncher(QMainWindow):
         super().__init__()
         self.setWindowTitle("Wi-Fi Survey Collector Launcher")
         self.process: QProcess | None = None
+        self._step_started_at: float | None = None
+        self._step_expected_seconds: int | None = None
+        self._step_label = ""
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._update_step_timer)
         self._build_ui(project)
 
     def _build_ui(self, project: str):
@@ -111,6 +118,24 @@ class CollectorLauncher(QMainWindow):
         presence_layout.addLayout(row)
 
         row = QHBoxLayout()
+        self.webcam_labels_check = QCheckBox("Use webcam-derived labels")
+        self.webcam_labels_check.setChecked(False)
+        row.addWidget(self.webcam_labels_check)
+        row.addWidget(QLabel("Camera index:"))
+        self.webcam_camera_edit = QLineEdit("0")
+        row.addWidget(self.webcam_camera_edit)
+        self.webcam_debug_check = QCheckBox("Debug thumbnails")
+        self.webcam_debug_check.setChecked(False)
+        row.addWidget(self.webcam_debug_check)
+        test_camera_btn = QPushButton("Test Camera")
+        test_camera_btn.clicked.connect(self._presence_webcam_test)
+        row.addWidget(test_camera_btn)
+        calibrate_camera_btn = QPushButton("Calibrate Webcam")
+        calibrate_camera_btn.clicked.connect(self._presence_webcam_calibrate)
+        row.addWidget(calibrate_camera_btn)
+        presence_layout.addLayout(row)
+
+        row = QHBoxLayout()
         row.addWidget(QLabel("Collector placement:"))
         self.collector_placement_edit = QLineEdit("HP + AR9271 fixed in bedroom")
         row.addWidget(self.collector_placement_edit)
@@ -139,6 +164,10 @@ class CollectorLauncher(QMainWindow):
         moving_btn = QPushButton("4 Train Occupied Moving")
         moving_btn.clicked.connect(lambda: self._presence_label_block("occupied_moving", self._validation_seconds()))
         workflow_row.addWidget(moving_btn)
+
+        webcam_train_btn = QPushButton("Train With Webcam")
+        webcam_train_btn.clicked.connect(self._presence_webcam_training)
+        workflow_row.addWidget(webcam_train_btn)
         presence_layout.addLayout(workflow_row)
 
         validation_row = QHBoxLayout()
@@ -161,6 +190,8 @@ class CollectorLauncher(QMainWindow):
 
         self.presence_output_label = QLabel("")
         presence_layout.addWidget(self.presence_output_label)
+        self.step_timer_label = QLabel("Timer: idle")
+        presence_layout.addWidget(self.step_timer_label)
         presence_layout.addWidget(QLabel("Mac analysis after syncing: python3 mac_analysis/presence_training.py --project <project> --session <presence-session>"))
         layout.addWidget(presence_grp)
 
@@ -262,10 +293,19 @@ class CollectorLauncher(QMainWindow):
     def _validation_seconds(self) -> str:
         return self._seconds(self.validation_seconds_edit, "600")
 
+    def _webcam_camera_index(self) -> str:
+        value = self.webcam_camera_edit.text().strip() or "0"
+        try:
+            index = max(0, int(float(value)))
+        except ValueError:
+            index = 0
+        self.webcam_camera_edit.setText(str(index))
+        return str(index)
+
     def _append(self, text: str):
         self.output.append(text.rstrip())
 
-    def _run_process(self, program: str, arguments: list[str], label: str):
+    def _run_process(self, program: str, arguments: list[str], label: str, expected_seconds: int | None = None):
         if self.process and self.process.state() != QProcess.NotRunning:
             QMessageBox.information(self, label, "A step is already running. Stop it before starting another.")
             return
@@ -278,7 +318,43 @@ class CollectorLauncher(QMainWindow):
         self.process.readyReadStandardError.connect(self._read_stderr)
         self.process.finished.connect(self._collector_finished)
         self._append(f"$ {program} {' '.join(arguments)}")
+        self._start_step_timer(label, expected_seconds)
         self.process.start()
+
+    def _start_step_timer(self, label: str, expected_seconds: int | None):
+        self._step_label = label
+        self._step_started_at = time.monotonic()
+        self._step_expected_seconds = expected_seconds
+        self._update_step_timer()
+        self._timer.start(1000)
+
+    def _update_step_timer(self):
+        if self._step_started_at is None:
+            self.step_timer_label.setText("Timer: idle")
+            return
+        elapsed = int(time.monotonic() - self._step_started_at)
+        if self._step_expected_seconds:
+            remaining = max(0, self._step_expected_seconds - elapsed)
+            self.step_timer_label.setText(
+                f"Timer: {self._step_label} {self._format_seconds(remaining)} remaining "
+                f"({self._format_seconds(elapsed)} elapsed)"
+            )
+        else:
+            self.step_timer_label.setText(f"Timer: {self._step_label} {self._format_seconds(elapsed)} elapsed")
+
+    def _clear_step_timer(self):
+        self._timer.stop()
+        self._step_started_at = None
+        self._step_expected_seconds = None
+        self._step_label = ""
+        self.step_timer_label.setText("Timer: idle")
+
+    def _format_seconds(self, seconds: int) -> str:
+        minutes, secs = divmod(max(0, seconds), 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:d}:{secs:02d}"
 
     def _stop_process(self):
         if self.process and self.process.state() != QProcess.NotRunning:
@@ -329,7 +405,7 @@ class CollectorLauncher(QMainWindow):
             QMessageBox.warning(self, "Preflight", "Wi-Fi preflight failed. See output.")
 
     def _presence_base_args(self) -> list[str]:
-        return [
+        args = [
             "--project",
             self._project(),
             "--session",
@@ -349,10 +425,15 @@ class CollectorLauncher(QMainWindow):
             "--label-source-detail",
             self.label_source_detail_edit.text().strip() or "derived occupancy only; no continuous video retained",
         ]
+        if self.webcam_labels_check.isChecked():
+            args.extend(["--webcam-labels", "--webcam-camera-index", self._webcam_camera_index()])
+            if self.webcam_debug_check.isChecked():
+                args.append("--webcam-debug-thumbnails")
+        return args
 
-    def _run_presence(self, extra_args: list[str], label: str):
+    def _run_presence(self, extra_args: list[str], label: str, expected_seconds: int | None = None):
         script = REPO_ROOT / "scripts" / "run_presence_tripwire.sh"
-        self._run_process(str(script), self._presence_base_args() + extra_args, label)
+        self._run_process(str(script), self._presence_base_args() + extra_args, label, expected_seconds=expected_seconds)
 
     def _presence_smoke_test(self):
         self._run_presence(
@@ -370,13 +451,43 @@ class CollectorLauncher(QMainWindow):
                 "8",
             ],
             "Presence smoke test",
+            expected_seconds=24,
         )
 
     def _presence_calibrate(self):
-        self._run_presence(["--calibrate", "--baseline-seconds", self._baseline_seconds()], "Presence calibration")
+        seconds = int(self._baseline_seconds())
+        self._run_presence(["--calibrate", "--baseline-seconds", str(seconds)], "Presence calibration", expected_seconds=seconds)
 
     def _presence_label_block(self, label: str, seconds: str):
-        self._run_presence(["--label-block", label, "--block-seconds", seconds], f"Presence {label}")
+        self._run_presence(["--label-block", label, "--block-seconds", seconds], f"Presence {label}", expected_seconds=int(seconds))
+
+    def _presence_webcam_training(self):
+        if not self.webcam_labels_check.isChecked():
+            self.webcam_labels_check.setChecked(True)
+        seconds = self._training_seconds()
+        self._run_presence(["--label-block", "unknown", "--block-seconds", seconds], "Presence webcam training", expected_seconds=int(seconds))
+
+    def _presence_webcam_test(self):
+        if not self.webcam_labels_check.isChecked():
+            self.webcam_labels_check.setChecked(True)
+        self._run_presence(["--webcam-test", "--webcam-scan-max-index", "6"], "Webcam test", expected_seconds=8)
+
+    def _presence_webcam_calibrate(self):
+        if not self.webcam_labels_check.isChecked():
+            self.webcam_labels_check.setChecked(True)
+        expected = 15 + 6 * 3
+        self._run_presence(
+            [
+                "--webcam-calibrate",
+                "--webcam-calibration-prompt",
+                "--webcam-calibration-samples",
+                "3",
+                "--webcam-pose-delay-seconds",
+                "15",
+            ],
+            "Webcam calibration",
+            expected_seconds=expected,
+        )
 
     def _presence_monitor(self):
         self._run_presence(["--monitor", "--occupancy-monitor"], "Presence live monitor")
@@ -391,6 +502,7 @@ class CollectorLauncher(QMainWindow):
 
     def _collector_finished(self, code: int, _status):
         self._append(f"[collector exited with code {code}]")
+        self._clear_step_timer()
 
     def _open_project_folder(self):
         project_path = Path(self._project())

@@ -39,6 +39,17 @@ from shared.occupancy import (
     train_profile_model,
 )
 from shared.utils import now_iso
+from shared.webcam_ground_truth import (
+    WEBCAM_EVENT_COLUMNS,
+    WEBCAM_HEALTH_COLUMNS,
+    WEBCAM_CALIBRATION_VERSION,
+    WebcamObservation,
+    WebcamOccupancyState,
+    recommend_motion_threshold,
+    summarize_calibration_samples,
+    webcam_event_row,
+    webcam_health_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +206,10 @@ def default_metadata_path(session_dir: Path) -> Path:
     return session_dir / "presence_experiment.json"
 
 
+def default_webcam_calibration_path(session_dir: Path) -> Path:
+    return session_dir / "presence_webcam_calibration.json"
+
+
 def _read_csv_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -223,6 +238,14 @@ def _append_state(states_path: Path, row: dict) -> None:
     _append_row(states_path, STATE_COLUMNS, row)
 
 
+def _append_webcam_event(events_path: Path, row: dict) -> None:
+    _append_row(events_path, WEBCAM_EVENT_COLUMNS, row)
+
+
+def _append_webcam_health(health_path: Path, row: dict) -> None:
+    _append_row(health_path, WEBCAM_HEALTH_COLUMNS, row)
+
+
 def append_health(health_path: Path, window: PresenceWindow, *, interface: str, backend: str) -> None:
     summary = window.summary
     _append_row(
@@ -249,7 +272,15 @@ def append_health(health_path: Path, window: PresenceWindow, *, interface: str, 
 def ensure_experiment_metadata(args, config, session_dir: Path) -> Path:
     path = default_metadata_path(session_dir)
     if path.exists() and not args.refresh_metadata:
-        return path
+        if not args.webcam_labels:
+            return path
+        try:
+            with open(path, encoding="utf-8") as handle:
+                existing = json.load(handle)
+        except Exception:
+            existing = {}
+        if existing.get("webcam_ground_truth", {}).get("enabled"):
+            return path
     path.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
         "version": EXPERIMENT_METADATA_VERSION,
@@ -262,6 +293,7 @@ def ensure_experiment_metadata(args, config, session_dir: Path) -> Path:
             "webcam_role": "derived_ground_truth_labels",
             "video_retention": args.video_retention,
             "stores_continuous_video": False,
+            "debug_thumbnails_enabled": bool(args.webcam_debug_thumbnails),
         },
         "hardware": {
             "collector": args.collector_label,
@@ -289,6 +321,18 @@ def ensure_experiment_metadata(args, config, session_dir: Path) -> Path:
             "scan_backend": args.backend,
             "target_ssid": args.ssid,
             "target_bssid": args.bssid or "",
+        },
+        "webcam_ground_truth": {
+            "enabled": bool(args.webcam_labels),
+            "camera_index": args.webcam_camera_index,
+            "calibration_path": str(default_webcam_calibration_path(session_dir)),
+            "sample_seconds": args.webcam_sample_seconds,
+            "min_frames": args.webcam_min_frames,
+            "motion_threshold": args.webcam_motion_threshold,
+            "low_light_threshold": args.webcam_low_light_threshold,
+            "motion_hold_seconds": args.webcam_motion_hold_seconds,
+            "stores_continuous_video": False,
+            "debug_thumbnails_enabled": bool(args.webcam_debug_thumbnails),
         },
         "notes": args.experiment_note,
         "project_config": {
@@ -341,6 +385,219 @@ def collect_presence_window(
         status=outcome.status,
         error_message=outcome.error_message,
     )
+
+
+def capture_webcam_observation(args, session_dir: Path, window: PresenceWindow, state: WebcamOccupancyState) -> WebcamObservation:
+    source_detail = args.label_source_detail or "derived occupancy only; no continuous video retained"
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        return state.derive(
+            observed_at=time.monotonic(),
+            motion_ratio=None,
+            frame_count=0,
+            brightness_avg=None,
+            min_frames=args.webcam_min_frames,
+            motion_threshold=args.webcam_motion_threshold,
+            low_light_threshold=args.webcam_low_light_threshold,
+            source_detail=source_detail,
+            status="camera_unavailable",
+            error=f"OpenCV unavailable: {e}",
+        )
+
+    capture = cv2.VideoCapture(args.webcam_camera_index)
+    if not capture.isOpened():
+        return state.derive(
+            observed_at=time.monotonic(),
+            motion_ratio=None,
+            frame_count=0,
+            brightness_avg=None,
+            min_frames=args.webcam_min_frames,
+            motion_threshold=args.webcam_motion_threshold,
+            low_light_threshold=args.webcam_low_light_threshold,
+            source_detail=source_detail,
+            status="camera_unavailable",
+            error=f"camera index {args.webcam_camera_index} unavailable",
+        )
+
+    frame_count = 0
+    brightness_values: list[float] = []
+    motion_values: list[float] = []
+    previous_gray = None
+    last_frame = None
+    deadline = time.monotonic() + max(0.1, args.webcam_sample_seconds)
+    try:
+        while time.monotonic() < deadline:
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                time.sleep(0.05)
+                continue
+            frame_count += 1
+            last_frame = frame
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness_values.append(float(gray.mean()))
+            if previous_gray is not None:
+                diff = cv2.absdiff(gray, previous_gray)
+                _threshold, changed = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+                motion_values.append(float((changed > 0).mean()))
+            previous_gray = gray
+            time.sleep(0.1)
+    finally:
+        capture.release()
+
+    debug_artifact = ""
+    if args.webcam_debug_thumbnails and last_frame is not None:
+        debug_dir = session_dir / "webcam_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = debug_dir / f"{window.window_id}.jpg"
+        if cv2.imwrite(str(debug_path), last_frame):
+            debug_artifact = str(debug_path.relative_to(session_dir))
+
+    brightness = _mean(brightness_values)
+    motion_ratio = _mean(motion_values) if motion_values else 0.0
+    return state.derive(
+        observed_at=time.monotonic(),
+        motion_ratio=motion_ratio,
+        frame_count=frame_count,
+        brightness_avg=brightness,
+        min_frames=args.webcam_min_frames,
+        motion_threshold=args.webcam_motion_threshold,
+        low_light_threshold=args.webcam_low_light_threshold,
+        source_detail=source_detail,
+        debug_artifact=debug_artifact,
+    )
+
+
+def discover_webcam_cameras(max_index: int = 6) -> list[dict]:
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        return [{"index": "", "available": False, "error": f"OpenCV unavailable: {e}"}]
+
+    cameras = []
+    for index in range(max(0, max_index + 1)):
+        capture = cv2.VideoCapture(index)
+        available = bool(capture.isOpened())
+        width = height = ""
+        if available:
+            ok, frame = capture.read()
+            if ok and frame is not None:
+                height, width = frame.shape[:2]
+        capture.release()
+        cameras.append({
+            "index": index,
+            "available": available,
+            "width": width,
+            "height": height,
+            "error": "" if available else "not available",
+        })
+    return cameras
+
+
+def run_webcam_test(args, config) -> None:
+    cameras = discover_webcam_cameras(args.webcam_scan_max_index)
+    logger.info("webcam camera scan:")
+    for camera in cameras:
+        logger.info(
+            "camera index=%s available=%s size=%sx%s %s",
+            camera.get("index"),
+            camera.get("available"),
+            camera.get("width", ""),
+            camera.get("height", ""),
+            camera.get("error", ""),
+        )
+
+
+def _calibration_window(session_id: str, sample_id: str, started_at: str, ended_at: str):
+    return type(
+        "WebcamCalibrationWindow",
+        (),
+        {
+            "window_id": sample_id,
+            "summary": {
+                "timestamp_start": started_at,
+                "timestamp_end": ended_at,
+                "session_id": session_id,
+            },
+        },
+    )()
+
+
+def _capture_calibration_sample(args, session_dir: Path, state: WebcamOccupancyState, sample_id: str) -> dict:
+    started = now_iso()
+    window = _calibration_window(args.session, sample_id, started, started)
+    observation = capture_webcam_observation(args, session_dir, window, state)
+    ended = now_iso()
+    row = webcam_event_row(_calibration_window(args.session, sample_id, started, ended), observation)
+    row["status"] = observation.status
+    row["debug_artifact"] = observation.debug_artifact
+    return row
+
+
+def run_webcam_calibration(args, config) -> Path:
+    session_dir = presence_session_dir(args.project, args.session)
+    ensure_experiment_metadata(args, config, session_dir)
+    output_path = Path(args.webcam_calibration_path) if args.webcam_calibration_path else default_webcam_calibration_path(session_dir)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    state = WebcamOccupancyState(hold_seconds=args.webcam_motion_hold_seconds)
+    empty_samples = []
+    person_samples = []
+
+    logger.info("webcam calibration camera=%s empty samples=%s", args.webcam_camera_index, args.webcam_calibration_samples)
+    for index in range(1, args.webcam_calibration_samples + 1):
+        sample_id = f"{args.session}_webcam_empty_{index:03d}"
+        empty_samples.append(_capture_calibration_sample(args, session_dir, state, sample_id))
+        time.sleep(max(0.0, args.webcam_calibration_delay))
+
+    if args.webcam_calibration_prompt:
+        logger.info("stand in several expected room positions now; person-present samples start in %s seconds", args.webcam_pose_delay_seconds)
+        time.sleep(max(0.0, args.webcam_pose_delay_seconds))
+
+    logger.info("webcam calibration person-present samples=%s", args.webcam_calibration_samples)
+    for index in range(1, args.webcam_calibration_samples + 1):
+        sample_id = f"{args.session}_webcam_person_{index:03d}"
+        person_samples.append(_capture_calibration_sample(args, session_dir, state, sample_id))
+        time.sleep(max(0.0, args.webcam_calibration_delay))
+
+    empty_summary = summarize_calibration_samples(empty_samples)
+    person_summary = summarize_calibration_samples(person_samples)
+    recommended_threshold = recommend_motion_threshold(empty_summary, person_summary, args.webcam_motion_threshold)
+    payload = {
+        "version": WEBCAM_CALIBRATION_VERSION,
+        "created_at": now_iso(),
+        "session_id": args.session,
+        "camera_index": args.webcam_camera_index,
+        "privacy": {
+            "stores_continuous_video": False,
+            "debug_thumbnails_enabled": bool(args.webcam_debug_thumbnails),
+        },
+        "procedure": {
+            "empty_room_samples": args.webcam_calibration_samples,
+            "person_present_samples": args.webcam_calibration_samples,
+            "sample_seconds": args.webcam_sample_seconds,
+            "pose_delay_seconds": args.webcam_pose_delay_seconds,
+            "notes": "person-present means room occupancy only; no identity inference",
+        },
+        "thresholds": {
+            "current_motion_threshold": args.webcam_motion_threshold,
+            "recommended_motion_threshold": recommended_threshold,
+            "low_light_threshold": args.webcam_low_light_threshold,
+            "motion_hold_seconds": args.webcam_motion_hold_seconds,
+        },
+        "empty_room": {
+            "summary": empty_summary,
+            "samples": empty_samples,
+        },
+        "person_present": {
+            "summary": person_summary,
+            "samples": person_samples,
+        },
+    }
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    logger.info("saved webcam calibration to %s; recommended motion threshold=%s", output_path, recommended_threshold)
+    return output_path
 
 
 def append_presence_raw(raw_path: Path, window: PresenceWindow) -> None:
@@ -607,6 +864,8 @@ def run_label_block(args, config) -> Path:
     health_path = session_dir / "presence_health.csv"
     features_path = session_dir / "presence_features.csv"
     labels_path = session_dir / "presence_labels.csv"
+    webcam_events_path = session_dir / "presence_webcam_events.csv"
+    webcam_health_path = session_dir / "presence_webcam_health.csv"
     model_path = Path(args.occupancy_model_path) if args.occupancy_model_path else default_model_path(session_dir)
     windows_needed = max(1, math.ceil(args.block_seconds / args.window_seconds))
     block_id = f"{args.session}_{args.label_block}_{int(time.time())}"
@@ -615,9 +874,13 @@ def run_label_block(args, config) -> Path:
     ensure_csv(health_path, PRESENCE_HEALTH_COLUMNS)
     ensure_csv(features_path, FEATURE_COLUMNS)
     ensure_csv(labels_path, LABEL_COLUMNS)
+    if args.webcam_labels:
+        ensure_csv(webcam_events_path, WEBCAM_EVENT_COLUMNS)
+        ensure_csv(webcam_health_path, WEBCAM_HEALTH_COLUMNS)
 
     logger.info("collecting %s labeled %s windows into %s", windows_needed, args.label_block, session_dir)
     history = _read_csv_rows(features_path)
+    webcam_state = WebcamOccupancyState(hold_seconds=args.webcam_motion_hold_seconds)
     start_window = _first_window_number(history, args.start_window)
     for window_number in range(start_window, start_window + windows_needed):
         window_started = time.monotonic()
@@ -637,22 +900,43 @@ def run_label_block(args, config) -> Path:
         motion_event = None
         feature = extract_feature_row(window, history, motion_score=motion_event.score if motion_event else None)
         _append_feature(features_path, feature)
+        label = args.label_block
+        label_confidence = args.label_confidence
+        source_detail = args.label_source_detail
+        label_note = args.note
+        if args.webcam_labels:
+            observation = capture_webcam_observation(args, session_dir, window, webcam_state)
+            _append_webcam_event(webcam_events_path, webcam_event_row(window, observation))
+            _append_webcam_health(
+                webcam_health_path,
+                webcam_health_row(
+                    timestamp=now_iso(),
+                    session_id=args.session,
+                    window_id=window.window_id,
+                    camera_index=args.webcam_camera_index,
+                    observation=observation,
+                ),
+            )
+            label = observation.label
+            label_confidence = str(observation.confidence)
+            source_detail = observation.source_detail
+            label_note = "; ".join(part for part in [args.note, observation.note] if part)
         _append_label(
             labels_path,
             label_row(
-                args.label_block,
+                label,
                 block_id,
                 feature,
-                note=args.note,
+                note=label_note,
                 label_source=args.label_source,
-                source_detail=args.label_source_detail,
-                label_confidence=args.label_confidence,
+                source_detail=source_detail,
+                label_confidence=label_confidence,
             ),
         )
         history.append(feature)
         logger.info(
             "label=%s window=%s status=%s rssi=%s bssids=%s",
-            args.label_block,
+            label,
             window.window_id,
             window.status,
             window.summary.get("rssi_avg_dbm"),
@@ -836,12 +1120,28 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument("--monitor", action="store_true", help="Run continuous tripwire monitoring")
     parser.add_argument("--label-block", choices=sorted(OCCUPANCY_LABELS), default=None)
     parser.add_argument("--block-seconds", type=float, default=120.0)
+    parser.add_argument("--webcam-test", action="store_true", help="List/test available OpenCV camera indices and exit")
+    parser.add_argument("--webcam-calibrate", action="store_true", help="Collect empty/person-present webcam calibration metrics and exit")
     parser.add_argument("--occupancy-monitor", action="store_true", help="Run live conservative occupancy scoring")
     parser.add_argument("--occupancy-model-path", default=None)
     parser.add_argument("--note", default="", help="Optional note for labeled occupancy windows")
     parser.add_argument("--label-source", default="manual", help="Ground-truth label source, e.g. manual, webcam_derived")
     parser.add_argument("--label-source-detail", default="", help="Optional label source detail without storing video")
     parser.add_argument("--label-confidence", default="", help="Optional confidence for derived labels")
+    parser.add_argument("--webcam-labels", action="store_true", help="Derive occupancy labels from a local webcam during label blocks")
+    parser.add_argument("--webcam-camera-index", type=int, default=0, help="OpenCV camera index for derived labels")
+    parser.add_argument("--webcam-sample-seconds", type=float, default=2.0, help="Seconds of frames sampled per RF window")
+    parser.add_argument("--webcam-min-frames", type=int, default=3, help="Minimum frames needed for a webcam-derived label")
+    parser.add_argument("--webcam-motion-threshold", type=float, default=0.015, help="Changed-pixel ratio for occupied_moving labels")
+    parser.add_argument("--webcam-low-light-threshold", type=float, default=25.0, help="Mean grayscale brightness below which labels become unknown")
+    parser.add_argument("--webcam-motion-hold-seconds", type=float, default=180.0, help="How long recent motion keeps occupied_still labels active")
+    parser.add_argument("--webcam-debug-thumbnails", action="store_true", help="Store one debug thumbnail per labeled RF window")
+    parser.add_argument("--webcam-scan-max-index", type=int, default=6, help="Highest camera index to try during webcam-test")
+    parser.add_argument("--webcam-calibration-path", default=None, help="Optional output path for presence_webcam_calibration.json")
+    parser.add_argument("--webcam-calibration-samples", type=int, default=3, help="Samples per empty/person-present calibration phase")
+    parser.add_argument("--webcam-calibration-delay", type=float, default=1.0, help="Delay between webcam calibration samples")
+    parser.add_argument("--webcam-pose-delay-seconds", type=float, default=15.0, help="Delay before person-present calibration samples")
+    parser.add_argument("--webcam-calibration-prompt", action="store_true", help="Pause before person-present calibration samples")
     parser.add_argument("--refresh-metadata", action="store_true", help="Rewrite presence_experiment.json")
     parser.add_argument("--experiment-note", default="", help="Session-level experiment note")
     parser.add_argument("--video-retention", default="derived_labels_only", help="Privacy note for webcam/video retention")
@@ -867,11 +1167,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     args.bssid = args.bssid if args.bssid is not None else (config.target_bssid or None)
     args.backend = args.backend or config.scan_backend or "iw"
 
-    if not args.ssid:
+    if not args.ssid and not (args.webcam_test or args.webcam_calibrate):
         raise RuntimeError("No target SSID configured; pass --ssid or set project_config.json")
+    if args.webcam_test or args.webcam_calibrate:
+        args.monitor = False
     if args.label_block:
         args.monitor = False
-    if not args.calibrate and not args.monitor and not args.label_block:
+    if not args.calibrate and not args.monitor and not args.label_block and not args.webcam_test and not args.webcam_calibrate:
         args.monitor = True
 
     logger.info(
@@ -883,6 +1185,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.backend,
     )
 
+    if args.webcam_test:
+        run_webcam_test(args, config)
+        return 0
+    if args.webcam_calibrate:
+        args.webcam_labels = True
+        run_webcam_calibration(args, config)
+        return 0
     if args.calibrate:
         run_calibration(args, config)
     if args.label_block:

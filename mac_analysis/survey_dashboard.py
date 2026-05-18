@@ -179,10 +179,13 @@ def _render_presence_occupancy(project_dir: Path):
     eval_path = session_dir / "presence_eval.json"
     errors_path = session_dir / "presence_eval_errors.csv"
     health_path = session_dir / "presence_health.csv"
+    webcam_events_path = session_dir / "presence_webcam_events.csv"
+    webcam_health_path = session_dir / "presence_webcam_health.csv"
+    webcam_calibration_path = session_dir / "presence_webcam_calibration.json"
     metadata_path = session_dir / "presence_experiment.json"
 
     st.caption(f"Artifacts: `{session_dir}`")
-    cols = st.columns(7)
+    cols = st.columns(10)
     cols[0].metric("Features", "yes" if features_path.exists() else "missing")
     cols[1].metric("Labels", "yes" if labels_path.exists() else "missing")
     cols[2].metric("States", "yes" if states_path.exists() else "missing")
@@ -190,6 +193,9 @@ def _render_presence_occupancy(project_dir: Path):
     cols[4].metric("Model", "yes" if model_path.exists() else "missing")
     cols[5].metric("Eval", "yes" if eval_path.exists() else "missing")
     cols[6].metric("Health", "yes" if health_path.exists() else "missing")
+    cols[7].metric("Webcam", "yes" if webcam_events_path.exists() else "missing")
+    cols[8].metric("Cam Health", "yes" if webcam_health_path.exists() else "missing")
+    cols[9].metric("Cam Cal", "yes" if webcam_calibration_path.exists() else "missing")
 
     labels_df = _read_csv(labels_path)
     features_df = _read_csv(features_path)
@@ -197,6 +203,8 @@ def _render_presence_occupancy(project_dir: Path):
     events_df = _read_csv(events_path)
     errors_df = _read_csv(errors_path)
     health_df = _read_csv(health_path)
+    webcam_events_df = _read_csv(webcam_events_path)
+    webcam_health_df = _read_csv(webcam_health_path)
 
     train_disabled = features_df.empty or labels_df.empty
     if st.button("Train / Evaluate Occupancy Model", type="primary", disabled=train_disabled, key="presence_train_eval_btn"):
@@ -219,6 +227,36 @@ def _render_presence_occupancy(project_dir: Path):
         st.subheader("Label Coverage")
         label_counts = labels_df.groupby(["label", "occupancy_label"], dropna=False).size().reset_index(name="windows")
         st.dataframe(label_counts, use_container_width=True, hide_index=True)
+        if "label_source" in labels_df.columns:
+            source_counts = labels_df.groupby(["label_source", "occupancy_label"], dropna=False).size().reset_index(name="windows")
+            st.dataframe(source_counts, use_container_width=True, hide_index=True)
+
+    if not webcam_events_df.empty or not webcam_health_df.empty:
+        st.subheader("Webcam Ground Truth")
+        if webcam_calibration_path.exists():
+            calibration = _load_json(webcam_calibration_path, {})
+            thresholds = calibration.get("thresholds", {})
+            c0, c1, c2 = st.columns(3)
+            c0.metric("Camera Index", calibration.get("camera_index", "n/a"))
+            c1.metric("Motion Threshold", thresholds.get("recommended_motion_threshold", "n/a"))
+            c2.metric("Low Light Threshold", thresholds.get("low_light_threshold", "n/a"))
+            with st.expander("Webcam Calibration", expanded=False):
+                st.json(calibration)
+        if not webcam_events_df.empty:
+            cols = st.columns(4)
+            cols[0].metric("Webcam Windows", len(webcam_events_df))
+            cols[1].metric("Vacant", int((webcam_events_df.get("occupancy_label") == "vacant").sum()))
+            cols[2].metric("Occupied", int((webcam_events_df.get("occupancy_label") == "occupied").sum()))
+            cols[3].metric("Unknown", int((webcam_events_df.get("occupancy_label") == "unknown").sum()))
+            if {"timestamp_start", "motion_ratio"}.issubset(webcam_events_df.columns):
+                chart_df = webcam_events_df[["timestamp_start", "motion_ratio"]].copy()
+                chart_df["timestamp_start"] = chart_df["timestamp_start"].astype(str)
+                st.line_chart(chart_df, x="timestamp_start", y="motion_ratio")
+            st.dataframe(webcam_events_df.tail(100), use_container_width=True, hide_index=True)
+        if not webcam_health_df.empty:
+            health_counts = webcam_health_df.groupby(["status"], dropna=False).size().reset_index(name="windows")
+            st.dataframe(health_counts, use_container_width=True, hide_index=True)
+            st.dataframe(webcam_health_df.tail(100), use_container_width=True, hide_index=True)
 
     if model_path.exists():
         with st.expander("Occupancy Model", expanded=True):

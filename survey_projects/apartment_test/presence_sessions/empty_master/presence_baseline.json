@@ -1,0 +1,35 @@
+{
+  "baseline_id": "empty_master_1779060370",
+  "created_at": "2026-05-17T23:26:10.371Z",
+  "discarded_window_count": 0,
+  "interface": "wlo1",
+  "location_label": "master_bed",
+  "metrics": {
+    "channel_utilization_proxy": {
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "rssi_avg_dbm": {
+      "mean": -30.75,
+      "std": 0.415
+    },
+    "rssi_std_db": {
+      "mean": 7.64,
+      "std": 0.343
+    },
+    "snr_avg_db": {
+      "mean": null,
+      "std": 0.0
+    },
+    "visible_bssid_count": {
+      "mean": 34.033,
+      "std": 3.434
+    }
+  },
+  "scan_backend": "iw",
+  "session_id": "empty_master",
+  "target_bssid": "",
+  "target_ssid": "NETGEAR97",
+  "version": 1,
+  "window_count": 60
+}

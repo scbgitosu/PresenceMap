@@ -13,6 +13,11 @@ from shared.occupancy import (
     score_occupancy,
     train_profile_model,
 )
+from shared.webcam_ground_truth import (
+    WebcamOccupancyState,
+    recommend_motion_threshold,
+    summarize_calibration_samples,
+)
 
 
 def _window(window_id, rssi, snr, *, status="ok", phase="label_vacant"):
@@ -200,6 +205,81 @@ class OccupancyTests(unittest.TestCase):
             self.assertTrue((session_dir / "presence_eval.json").exists())
             self.assertTrue((session_dir / "presence_eval_errors.csv").exists())
             self.assertTrue(evaluation["model_ready"])
+
+    def test_webcam_state_derives_motion_hold_and_vacancy(self):
+        state = WebcamOccupancyState(hold_seconds=10)
+        moving = state.derive(
+            observed_at=100,
+            motion_ratio=0.04,
+            frame_count=5,
+            brightness_avg=80,
+            min_frames=3,
+            motion_threshold=0.015,
+            low_light_threshold=25,
+            source_detail="derived occupancy only; no continuous video retained",
+        )
+        still = state.derive(
+            observed_at=105,
+            motion_ratio=0.0,
+            frame_count=5,
+            brightness_avg=80,
+            min_frames=3,
+            motion_threshold=0.015,
+            low_light_threshold=25,
+            source_detail="derived occupancy only; no continuous video retained",
+        )
+        vacant = state.derive(
+            observed_at=120,
+            motion_ratio=0.0,
+            frame_count=5,
+            brightness_avg=80,
+            min_frames=3,
+            motion_threshold=0.015,
+            low_light_threshold=25,
+            source_detail="derived occupancy only; no continuous video retained",
+        )
+
+        self.assertEqual(moving.label, "occupied_moving")
+        self.assertEqual(still.label, "occupied_still")
+        self.assertEqual(vacant.label, "vacant")
+
+    def test_webcam_unknown_labels_do_not_train_model(self):
+        history = []
+        feature_rows = []
+        label_rows = []
+        for window_id, rssi, snr, label in [
+            ("w01", -55, 35, "vacant"),
+            ("w02", -56, 34, "vacant"),
+            ("w03", -66, 24, "occupied"),
+            ("w04", -67, 23, "occupied"),
+            ("w05", -60, 30, "unknown"),
+        ]:
+            feature = extract_feature_row(_window(window_id, rssi, snr), history, motion_score=0.1)
+            feature_rows.append(feature)
+            label_rows.append(label_row(label, "webcam", feature, label_source="webcam_derived"))
+            history.append(feature)
+
+        model = train_profile_model(feature_rows, label_rows, session_id="home_occupancy")
+
+        self.assertEqual(model["profiles"]["vacant"]["window_count"], 2)
+        self.assertEqual(model["profiles"]["occupied"]["window_count"], 2)
+        self.assertTrue(model_is_ready(model))
+
+    def test_webcam_calibration_summarizes_and_recommends_threshold(self):
+        empty = summarize_calibration_samples([
+            {"brightness_avg": 70, "motion_ratio": 0.002, "occupancy_label": "vacant"},
+            {"brightness_avg": 72, "motion_ratio": 0.004, "occupancy_label": "vacant"},
+        ])
+        person = summarize_calibration_samples([
+            {"brightness_avg": 68, "motion_ratio": 0.03, "occupancy_label": "occupied"},
+            {"brightness_avg": 69, "motion_ratio": 0.05, "occupancy_label": "occupied"},
+        ])
+        threshold = recommend_motion_threshold(empty, person)
+
+        self.assertEqual(empty["sample_count"], 2)
+        self.assertEqual(empty["motion_max"], 0.004)
+        self.assertEqual(person["motion_mean"], 0.04)
+        self.assertEqual(threshold, 0.022)
 
 
 if __name__ == "__main__":
