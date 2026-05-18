@@ -1,6 +1,8 @@
-# Python-only deps for the HP field collector.
-# Qt platform plugins and Wi-Fi tools are system packages — see README.md
-# ("HP Ubuntu setup") for the matching `sudo apt install ...` line.
-PyQt5>=5.15
-pandas>=2.0
+# Python deps for the HP Linux sensor agent.
+# System packages (iw, ath9k patched kernel, recvCSI binary, libcamera) are
+# documented in docs/AGENT_SETUP_LINUX.md.
+numpy>=1.26
+pyzmq>=25.0
+msgpack>=1.0
 opencv-python-headless>=4.9
+pandas>=2.0

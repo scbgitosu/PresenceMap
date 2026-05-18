@@ -14,24 +14,30 @@ env/
 # Streamlit
 .streamlit/
 
-# Survey data (keep structure, ignore actual data files)
-survey_projects/**/*.csv
-survey_projects/**/*.png
-!survey_projects/**/floorplan.png
+# v2 session data (keep JSON metadata, ignore large/binary artifacts)
+data/survey_projects/**/*.csv
+data/survey_projects/**/*.parquet
+data/survey_projects/**/thumbnails/*.jpg
+data/survey_projects/**/*.log.jsonl
+data/survey_projects/**/*.png
+!data/survey_projects/**/floorplan.png
+
+# v1 legacy session data (kept on disk, never committed)
+data/survey_projects/**/presence_sessions/**/*.csv
+data/survey_projects/**/survey_sessions/**/*.csv
+data/survey_projects/**/survey_sessions/**/*.bak
+
+# Trained models (large binary weights)
+data/models/**/weights.pt
+data/models/**/confusion.png
+
+# Live-mode runtime state
+data/runtime/
 
 # Generated outputs
 output/heatmaps/*.png
 output/reports/*.pdf
 output/exports/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
 
 # Floorplan raw files (large images — not tracked)
 floorplans/raw/*
@@ -44,4 +50,15 @@ scans/raw/*
 !scans/raw/.gitkeep
 scans/processed/*
 !scans/processed/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# GitNexus
 .gitnexus
