@@ -21,3 +21,6 @@ exclude = ["tools*", "tests*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "slow: end-to-end tests that bring up real ZMQ sockets + train models (~10s+)",
+]

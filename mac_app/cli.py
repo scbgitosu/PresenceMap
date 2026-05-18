@@ -88,9 +88,17 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
     return subprocess.call(cmd, env=env)
 
 
-def _cmd_api(_args: argparse.Namespace) -> int:
-    print("api lands in Stage 6 (`uvicorn mac_app.api.server:app`)", file=sys.stderr)
-    return 64
+def _cmd_api(args: argparse.Namespace) -> int:
+    """Launch the FastAPI live state service via uvicorn."""
+    if args.sqlite:
+        os.environ["PRESENCE_SQLITE_PATH"] = str(args.sqlite)
+    if args.project:
+        os.environ["PRESENCE_PROJECT_DIR"] = str(args.project)
+    if args.bind:
+        os.environ["PRESENCE_API_BIND"] = args.bind
+    from mac_app.api.server import main as api_main
+
+    return api_main()
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
@@ -144,7 +152,10 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--project", default="data/survey_projects/apartment_test")
     p.set_defaults(func=_cmd_dashboard)
 
-    p = sub.add_parser("api", help="(Stage 6) launch the FastAPI live state service")
+    p = sub.add_parser("api", help="launch the FastAPI live state service")
+    p.add_argument("--project", default="data/survey_projects/apartment_test")
+    p.add_argument("--sqlite", default=None, help="override LiveBuffer SQLite path")
+    p.add_argument("--bind", default=None, help="host:port (default 127.0.0.1:8765)")
     p.set_defaults(func=_cmd_api)
 
     p = sub.add_parser("train", help="train a TemporalCSIModel on one or more recorded sessions")

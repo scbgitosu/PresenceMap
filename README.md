@@ -1,290 +1,132 @@
-# PresenceMap
+# PresenceMap v2
 
-PresenceMap is a local-first RF sensing experiment for exploring whether ordinary
-Wi-Fi observations can support motion detection, room presence, and lightweight
-automation/security workflows.
+RF-based room-presence detection. A thin Linux **sensor agent** captures CSI
+(Channel State Information) from an Atheros AR9271 in monitor mode plus
+RSSI/SNR from `iw scan`, and streams it to a **Mac dashboard** that owns
+training (with webcam-derived YOLO ground truth), live inference (on MPS),
+and a local REST API.
 
-This project is forked from HeatMap, but the active workflow is PresenceMap:
+## Architecture
 
-- HP Linux machine for field collection
-- External Atheros Wi-Fi adapter
-- Python collector and analysis tools
-- CSV/event-log pipeline
-- Mac-side Streamlit dashboards
-- Optional floorplan, room, and session metadata
-
-The goal is different from HeatMap. HeatMap maps Wi-Fi quality to choose access
-point placement. PresenceMap watches how Wi-Fi observations change over time and
-tries to infer events such as movement through a doorway, room occupancy, and
-vacancy.
-
-## Hardware Target
-
-Initial setup:
-
-- Netgear Nighthawk router
-- Netgear Nighthawk node
-- HP Linux computer
-- External Atheros network interface
-- MacBook M1 Max Pro for analysis and dashboard work
-
-## First Hypothesis
-
-The first realistic milestone is a Wi-Fi tripwire:
-
-1. Establish a stable baseline across a doorway, hallway, or room boundary.
-2. Continuously sample RSSI, SNR, bitrate, MCS, channel, and visible BSSIDs.
-3. Detect short-window changes that look like a body crossing the RF path.
-4. Log motion events with confidence and timestamps.
-5. Review those events on a Mac dashboard.
-
-Whole-apartment room occupancy is a second milestone. It may be possible to infer
-coarse presence with careful calibration, but it should be treated as a
-confidence-scored estimate rather than precise tracking.
-
-## Project Direction
-
-PresenceMap will evolve in three phases:
-
-### Phase 1: Continuous Collection
-
-- Add an HP-side continuous collector.
-- Record time-series RF observations instead of click-based survey points.
-- Keep interface discovery, `iw`/`nmcli` support, project config, and CSV writer
-  patterns. Floorplan metadata remains optional context for later map overlays.
-
-### Phase 2: Motion and Presence Scoring
-
-- Build baseline profiles for vacant, occupied, and movement states.
-- Compute rolling-window deltas and variance.
-- Emit event rows such as `motion`, `occupied`, `vacant`, and `unknown`.
-- Keep results explainable before trying any heavier modeling.
-
-### Phase 3: Automation Hooks
-
-- Publish events to MQTT, Home Assistant webhooks, or a local API.
-- Support rules such as turning on lights when confidence crosses a threshold.
-- Keep an auditable event log for security-context experiments.
-
-## Current Status
-
-This repo now centers on the PresenceMap prototype for headless HP-side
-collection, Mac-side training, and local review.
-
-## HP Presence Tripwire Prototype
-
-The prototype collector runs on the HP Linux machine with the external Atheros
-adapter. It reuses `hp_collector/wifi_scan.py` for `iw`/`nmcli` scanning, then
-writes a continuous raw log and a motion-event log under the selected project:
-
-```text
-survey_projects/<project>/presence_sessions/<session>/
-  presence_raw.csv
-  presence_events.csv
-  presence_health.csv
-  presence_experiment.json
-  presence_baseline.json
+```
+   HP laptop (Ubuntu)                            Mac (Apple Silicon)
+   ┌──────────────────────────┐                ┌─────────────────────────────┐
+   │   presence-agent run     │  ZMQ pub/sub   │   presence-mac dashboard    │
+   │ ─────────────────────── │ ─────────────► │ Streamlit (Training + Live) │
+   │   AR9271 monitor mode    │   tcp/5555     │     SessionRecorder         │
+   │   recvCSI subprocess     │   tcp/5556     │     YOLOv8n on MPS          │
+   │   iw scan -> RSSI/SNR    │                │     InferenceLoop on MPS    │
+   │   webcam JPEG @ 5 Hz     │                │     LiveBuffer (SQLite)     │
+   │   per-window WindowMsg   │                │   presence-mac api          │
+   │   + HealthMsg every 2 s  │                │   FastAPI /state /history   │
+   └──────────────────────────┘                └─────────────────────────────┘
+                                                   ▲
+                                                   │ same SQLite
+                                                   ▼
+                                              data/runtime/live_buffer.sqlite3
 ```
 
-`presence_raw.csv` contains every observed BSSID row from each scan window,
-including RSSI, channel, link RSSI/SNR/bitrate/MCS fields when available, plus
-window-level tripwire metadata. `presence_events.csv` contains thresholded
-`motion` events with confidence scores and baseline deltas. `presence_health.csv`
-tracks per-window collector status for multi-day runs. `presence_experiment.json`
-records hardware placement, collection cadence, and the privacy posture for any
-webcam-derived labels. This is coarse RF motion sensing only; it does not
-identify people.
+The HP never runs the model. The Mac never runs the radio. Everything is in
+the open in `data/survey_projects/<project>/` and `data/models/`.
 
-### HP Linux Setup
+## Quickstart
 
-On the HP, install system tools and Python dependencies from the repo root:
+### HP (Linux sensor)
 
-```bash
-sudo apt update
-sudo apt install network-manager iw python3-venv
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-hp.txt
+One-time setup is in [docs/AGENT_SETUP_LINUX.md](docs/AGENT_SETUP_LINUX.md)
+(patched ath9k driver, `recvCSI` binary, passwordless sudo for `iw`).
+
+Per-boot:
+
+```sh
+sudo ./tools/scripts/atheros_csi_setup.sh --iface wlan1 --channel 6 --bw HT20
 ```
 
-Plug in the Atheros adapter and find its interface name:
+Run the agent:
 
-```bash
-iw dev
-nmcli device status
+```sh
+presence-agent run \
+  --project ../data/survey_projects/apartment_test \
+  --session train001 \
+  --csi --csi-source atheros
 ```
 
-The examples below use `wlan1`; replace it with the detected Atheros interface.
-For the default `iw` backend, the scanner invokes `sudo iw dev <iface> scan`, so
-run from a terminal where `sudo` is available.
+### Mac (Training + Live)
 
-### Calibrate a Baseline
-
-Place the HP and adapter in the intended tripwire position, keep the doorway or
-room boundary vacant, then collect a baseline:
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session front_door_tripwire \
-  --interface wlan1 \
-  --calibrate \
-  --baseline-seconds 120 \
-  --location-label front_door
+```sh
+pip install -e .
+pip install -r requirements-mac.txt
 ```
 
-This writes `presence_baseline.json` and also appends calibration observations
-to `presence_raw.csv`. Recalibrate whenever the adapter, router/node placement,
-target SSID/BSSID, or tripwire location changes.
+Training:
 
-### Run Continuous Monitoring
-
-After calibration, run the headless monitor:
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session front_door_tripwire \
-  --interface wlan1 \
-  --monitor
+```sh
+presence-mac dashboard --project data/survey_projects/apartment_test
 ```
 
-Useful tuning flags:
+In the browser:
 
-```bash
---samples-per-window 5      # scans per scoring window
---window-seconds 5          # approximate cadence
---threshold 2.5             # higher is less sensitive
---cooldown-seconds 10       # minimum spacing between event rows
---backend auto              # try iw, then nmcli fallback
---bssid aa:bb:cc:dd:ee:ff  # lock tripwire to one AP/router/node
+1. **Training → Setup**: ping the HP agent.
+2. **Training → Collect**: start a session, switch phases (calibration →
+   labeled_vacant → labeled_occupied), stop. YOLOv8n on MPS labels frames at
+   2 Hz; per-window labels and rolling thumbnails land under
+   `data/survey_projects/<project>/sessions/<id>/`.
+3. **Training → Train**: pick session(s), click Train. ~60k-param GRU on MPS
+   typically finishes in seconds; model + eval are saved under
+   `data/models/<model_id>/`.
+
+Or via CLI:
+
+```sh
+presence-mac train --project data/survey_projects/apartment_test --session train001
 ```
 
-For a short smoke test without leaving it running:
+Live mode:
 
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session front_door_tripwire \
-  --interface wlan1 \
-  --monitor \
-  --max-windows 3
+```sh
+# In one terminal -- the local REST API
+presence-mac api --project data/survey_projects/apartment_test
+
+# In another -- the dashboard (Live tab)
+presence-mac dashboard --project data/survey_projects/apartment_test
 ```
 
-### Presence-First Setup
+REST endpoints:
 
-PresenceMap does not require a labeled floorplan before data collection. The
-minimum setup is a project config with target SSID and HP interface.
-
-On the Mac dashboard, open **Setup** and use **Presence Room Experiment**:
-
-```bash
-streamlit run mac_analysis/survey_dashboard.py -- --project survey_projects/apartment_test
+```sh
+curl http://127.0.0.1:8765/state
+curl 'http://127.0.0.1:8765/history?since=2026-05-18T00:00:00Z&limit=200'
+curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/models
 ```
 
-Save the target SSID, HP Wi-Fi interface, scan backend, and first room label.
-Floorplan import/labeling is still available later, but it is optional for the
-bedroom occupancy workflow.
+## Why CSI + YOLO?
 
-### Train Whole-Home Occupancy
+The v1 pipeline trained on RSSI alone with motion-ratio webcam labels.
+[.claude/plans/check-the-current-implementation-sprightly-pixel.md](.claude/plans/check-the-current-implementation-sprightly-pixel.md)
+documents what went wrong; the short version:
 
-Whole-home occupancy is trained from guided labeled blocks. Start with a vacant
-home block, then collect occupied-still and occupied-moving blocks in the same
-presence session:
+- v1's `link_iw()` silently dropped every `iw link` failure, so 100% of
+  SNR/noise values were NULL. Models were RSSI-only.
+- The motion-ratio webcam labels couldn't tell "still occupant" from
+  "empty room", so labels were 75% vacant / 3% occupied_moving on real
+  sessions. v2 swaps in YOLO person detection.
+- CSI gives per-subcarrier amplitude and phase, which captures multipath
+  fading directly. A small sequence model on top is the cheapest big
+  accuracy unlock you get from minimal hardware.
 
-For a button-driven workflow on the HP, launch:
+## Layout
 
-```bash
-python3 hp_collector/collector_launcher.py --project survey_projects/apartment_test
+```
+hp_agent/       Linux sensor: CSI + RSSI + webcam + ZMQ publishers
+mac_app/        Mac side: dashboard, training, live inference, REST API
+shared/         Shared dataclasses, schemas, project paths
+tools/legacy/   Archived v1 / HeatMap survey code -- not imported anywhere
+data/           Projects, sessions, models, runtime SQLite (gitignored)
+docs/           Architecture + Linux setup + roadmap
+tests/          pytest suite
 ```
 
-Use the **Bedroom Presence Training Rig** panel to set the session, interface,
-room, and durations once, then click through smoke test, calibration, training
-blocks, validation blocks, and live monitor. The Mac dashboard also has a
-one-click **Train / Evaluate Occupancy Model** button after `presence_sessions`
-has been synced back.
+## License
 
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block vacant \
-  --block-seconds 300
-
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block occupied_still \
-  --block-seconds 300
-
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block occupied_moving \
-  --block-seconds 300
-```
-
-This writes feature, label, and model artifacts beside the tripwire logs:
-
-```text
-survey_projects/<project>/presence_sessions/<session>/
-  presence_features.csv
-  presence_labels.csv
-  presence_states.csv
-  presence_model.json
-  presence_eval.json
-  presence_eval_errors.csv
-```
-
-For privacy-first webcam ground truth, store derived labels instead of
-continuous video. For example, a reviewed webcam signal can be recorded as a
-label source without saving frames:
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block validation_occupied \
-  --block-seconds 300 \
-  --label-source webcam_derived \
-  --label-source-detail "derived occupancy only; no continuous video retained"
-```
-
-After syncing `presence_sessions` back to the Mac, train and evaluate the
-occupancy model:
-
-```bash
-python3 mac_analysis/presence_training.py \
-  --project survey_projects/apartment_test \
-  --session home_occupancy
-```
-
-This rewrites `presence_model.json`, writes `presence_eval.json`, and lists false
-positive/false negative windows in `presence_eval_errors.csv` for dashboard
-review.
-
-Run conservative live occupancy scoring after the model has both vacant and
-occupied examples:
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --monitor \
-  --occupancy-monitor
-```
-
-The live state stream is intentionally conservative. It can emit `unknown` when
-the RF evidence is weak or mixed, and it does not identify people.
-
-## Safety and Privacy
-
-PresenceMap should be treated as experimental sensing infrastructure. It should
-not be used as a sole security system, and any occupancy logging should be
-designed with clear local control, retention limits, and visibility into what is
-being stored.
+See repo root.
