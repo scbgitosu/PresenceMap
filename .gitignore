@@ -22,10 +22,13 @@ data/survey_projects/**/*.log.jsonl
 data/survey_projects/**/*.png
 !data/survey_projects/**/floorplan.png
 
-# v1 legacy session data (kept on disk, never committed)
-data/survey_projects/**/presence_sessions/**/*.csv
-data/survey_projects/**/survey_sessions/**/*.csv
-data/survey_projects/**/survey_sessions/**/*.bak
+# Legacy HeatMap session trees (optional local data)
+data/survey_projects/**/presence_sessions/**
+data/survey_projects/**/survey_sessions/**
+
+# RuView reference clone build artifacts
+RuView/v2/target/
+RuView/**/build/
 
 # Trained models (large binary weights)
 data/models/**/weights.pt
@@ -33,6 +36,7 @@ data/models/**/confusion.png
 
 # Live-mode runtime state
 data/runtime/
+data/runtime/esp32_state.json
 
 # Generated outputs
 output/heatmaps/*.png

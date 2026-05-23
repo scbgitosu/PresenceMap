@@ -4,23 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "presencemap"
-version = "2.0.0a0"
-description = "RF-based presence detection: thin Linux sensor agent + Mac training/live dashboard"
+version = "3.0.0a0"
+description = "ESP32 CSI room presence sensing on Mac"
 requires-python = ">=3.10"
 readme = "README.md"
 
 [project.scripts]
-# Filled in by Stage 2 (agent) and Stages 4/6 (dashboard, api)
-presence-agent = "hp_agent.cli:main"
 presence-mac = "mac_app.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["hp_agent*", "mac_app*", "shared*"]
-exclude = ["tools*", "tests*"]
+include = ["mac_app*", "shared*"]
+exclude = ["tools*", "tests*", "RuView*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = [
-    "slow: end-to-end tests that bring up real ZMQ sockets + train models (~10s+)",
-]

@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from mac_app.train.dataset import list_v2_sessions
+from mac_app.train.dataset import list_sessions
 from mac_app.train.eval import EvaluationResult, evaluate
 from mac_app.train.features import (
     DatasetSpec,

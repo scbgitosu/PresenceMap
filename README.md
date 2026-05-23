@@ -1,132 +1,74 @@
-# PresenceMap v2
+# PresenceMap
 
-RF-based room-presence detection. A thin Linux **sensor agent** captures CSI
-(Channel State Information) from an Atheros AR9271 in monitor mode plus
-RSSI/SNR from `iw scan`, and streams it to a **Mac dashboard** that owns
-training (with webcam-derived YOLO ground truth), live inference (on MPS),
-and a local REST API.
-
-## Architecture
-
-```
-   HP laptop (Ubuntu)                            Mac (Apple Silicon)
-   ┌──────────────────────────┐                ┌─────────────────────────────┐
-   │   presence-agent run     │  ZMQ pub/sub   │   presence-mac dashboard    │
-   │ ─────────────────────── │ ─────────────► │ Streamlit (Training + Live) │
-   │   AR9271 monitor mode    │   tcp/5555     │     SessionRecorder         │
-   │   recvCSI subprocess     │   tcp/5556     │     YOLOv8n on MPS          │
-   │   iw scan -> RSSI/SNR    │                │     InferenceLoop on MPS    │
-   │   webcam JPEG @ 5 Hz     │                │     LiveBuffer (SQLite)     │
-   │   per-window WindowMsg   │                │   presence-mac api          │
-   │   + HealthMsg every 2 s  │                │   FastAPI /state /history   │
-   └──────────────────────────┘                └─────────────────────────────┘
-                                                   ▲
-                                                   │ same SQLite
-                                                   ▼
-                                              data/runtime/live_buffer.sqlite3
-```
-
-The HP never runs the model. The Mac never runs the radio. Everything is in
-the open in `data/survey_projects/<project>/` and `data/models/`.
+ESP32 CSI room-presence sensing on your Mac. Three RuView-flashed **ESP32-S3** nodes stream WiFi channel state information over UDP; PresenceMap ingests, diagnoses link health, records labeled sessions, and trains a small sequence model for occupied / vacant inference.
 
 ## Quickstart
-
-### HP (Linux sensor)
-
-One-time setup is in [docs/AGENT_SETUP_LINUX.md](docs/AGENT_SETUP_LINUX.md)
-(patched ath9k driver, `recvCSI` binary, passwordless sudo for `iw`).
-
-Per-boot:
-
-```sh
-sudo ./tools/scripts/atheros_csi_setup.sh --iface wlan1 --channel 6 --bw HT20
-```
-
-Run the agent:
-
-```sh
-presence-agent run \
-  --project ../data/survey_projects/apartment_test \
-  --session train001 \
-  --csi --csi-source atheros
-```
-
-### Mac (Training + Live)
 
 ```sh
 pip install -e .
 pip install -r requirements-mac.txt
 ```
 
-Training:
+**Terminal 1** — ingest (must be the only process on UDP 5005):
 
 ```sh
-presence-mac dashboard --project data/survey_projects/apartment_test
+presence-mac esp32-ingest --project data/survey_projects/my_bed
 ```
 
-In the browser:
-
-1. **Training → Setup**: ping the HP agent.
-2. **Training → Collect**: start a session, switch phases (calibration →
-   labeled_vacant → labeled_occupied), stop. YOLOv8n on MPS labels frames at
-   2 Hz; per-window labels and rolling thumbnails land under
-   `data/survey_projects/<project>/sessions/<id>/`.
-3. **Training → Train**: pick session(s), click Train. ~60k-param GRU on MPS
-   typically finishes in seconds; model + eval are saved under
-   `data/models/<model_id>/`.
-
-Or via CLI:
+**Terminal 2** — dashboard:
 
 ```sh
-presence-mac train --project data/survey_projects/apartment_test --session train001
+presence-mac dashboard --project data/survey_projects/my_bed
 ```
 
-Live mode:
+Open **ESP32 Nodes** and confirm all nodes show **ok**.
+
+## Record + train
+
+Stop ingest, then record labeled sessions:
 
 ```sh
-# In one terminal -- the local REST API
-presence-mac api --project data/survey_projects/apartment_test
+presence-mac esp32-record --project data/survey_projects/my_bed \
+  --session bed_vacant_001 --duration 120 --phase labeled_vacant
 
-# In another -- the dashboard (Live tab)
-presence-mac dashboard --project data/survey_projects/apartment_test
+presence-mac esp32-record --project data/survey_projects/my_bed \
+  --session bed_occ_001 --duration 120 --phase labeled_occupied
 ```
 
-REST endpoints:
+Train and run live inference from the dashboard (**Train**, **Models**, **ESP32 Nodes**).
+
+Optional REST API:
 
 ```sh
-curl http://127.0.0.1:8765/state
-curl 'http://127.0.0.1:8765/history?since=2026-05-18T00:00:00Z&limit=200'
-curl http://127.0.0.1:8765/health
-curl http://127.0.0.1:8765/models
+presence-mac api --project data/survey_projects/my_bed
 ```
 
-## Why CSI + YOLO?
+## Hardware
 
-The v1 pipeline trained on RSSI alone with motion-ratio webcam labels.
-[.claude/plans/check-the-current-implementation-sprightly-pixel.md](.claude/plans/check-the-current-implementation-sprightly-pixel.md)
-documents what went wrong; the short version:
+| Item | Role |
+|------|------|
+| 3× ESP32-S3 | CSI nodes (RuView firmware, UDP → Mac) |
+| Mac (Apple Silicon) | Ingest, UI, training on MPS |
+| Wi‑Fi router | AP for nodes + home network |
 
-- v1's `link_iw()` silently dropped every `iw link` failure, so 100% of
-  SNR/noise values were NULL. Models were RSSI-only.
-- The motion-ratio webcam labels couldn't tell "still occupant" from
-  "empty room", so labels were 75% vacant / 3% occupied_moving on real
-  sessions. v2 swaps in YOLO person detection.
-- CSI gives per-subcarrier amplitude and phase, which captures multipath
-  fading directly. A small sequence model on top is the cheapest big
-  accuracy unlock you get from minimal hardware.
+See [docs/ESP32_SETUP.md](docs/ESP32_SETUP.md). Wire format and firmware live in [RuView/](RuView/) (upstream reference, not modified by PresenceMap).
 
 ## Layout
 
 ```
-hp_agent/       Linux sensor: CSI + RSSI + webcam + ZMQ publishers
-mac_app/        Mac side: dashboard, training, live inference, REST API
-shared/         Shared dataclasses, schemas, project paths
-tools/legacy/   Archived v1 / HeatMap survey code -- not imported anywhere
-data/           Projects, sessions, models, runtime SQLite (gitignored)
-docs/           Architecture + Linux setup + roadmap
-tests/          pytest suite
+mac_app/
+  capture/     ESP32 UDP ingest, ADR-018 parser, CSI features
+  train/       TemporalCSIModel, dataset, registry
+  inference/   Live buffer, ESP32 inference loop
+  dashboard/   Streamlit UI
+  api/         Local REST service
+shared/        Project paths, schemas
+data/          Projects, sessions, models (gitignored artifacts)
+RuView/        Upstream CSI firmware + docs (reference)
+docs/
+tests/
 ```
 
-## License
+## What we removed
 
-See repo root.
+PresenceMap no longer includes the HeatMap survey stack, HP Linux `presence-agent`, AR9271 / Atheros CSI tool path, ZMQ HP→Mac transport, YOLO webcam labeling, or legacy floorplan survey UI. Those lived in earlier v1/v2 prototypes.

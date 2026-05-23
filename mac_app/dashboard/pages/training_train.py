@@ -6,16 +6,16 @@ from typing import List
 
 import streamlit as st
 
-from mac_app.train.dataset import list_v2_sessions
+from mac_app.train.dataset import list_sessions
 from mac_app.train.features import DatasetSpec, build_dataset
 from mac_app.train.train import TrainConfig, train_session
 
 
 def render(project_dir: Path) -> None:
     st.header("Training → Train")
-    sessions = list_v2_sessions(project_dir)
+    sessions = list_sessions(project_dir)
     if not sessions:
-        st.info("no v2 sessions to train on. Collect one in Training → Collect first.")
+        st.info("No sessions yet. Record labeled data on **ESP32 Nodes** or via `presence-mac esp32-record`.")
         return
     picked: List[str] = st.multiselect("sessions", sessions, default=sessions[:1])
     cols = st.columns(4)
