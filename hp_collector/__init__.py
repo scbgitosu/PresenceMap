@@ -1,1 +1,0 @@
-"""HP field collector package."""

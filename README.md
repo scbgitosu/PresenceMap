@@ -1,290 +1,147 @@
 # PresenceMap
 
-PresenceMap is a local-first RF sensing experiment for exploring whether ordinary
-Wi-Fi observations can support motion detection, room presence, and lightweight
-automation/security workflows.
+ESP32 CSI room-presence sensing on your Mac. Three RuView-flashed **ESP32-S3** nodes stream WiFi channel state information over UDP; PresenceMap ingests, diagnoses link health, records labeled sessions, and trains a small sequence model for occupied / vacant inference.
 
-This project is forked from HeatMap, but the active workflow is PresenceMap:
+**North star:** privacy-first **sleep tracking** in the bedroom—movement, restlessness, respiration and heart rate (where CSI supports it), and an overall **sleep score**—validated against trusted wearables (e.g. Apple Watch), not marketed as clinical vitals.
 
-- HP Linux machine for field collection
-- External Atheros Wi-Fi adapter
-- Python collector and analysis tools
-- CSV/event-log pipeline
-- Mac-side Streamlit dashboards
-- Optional floorplan, room, and session metadata
+## Sleep tracking roadmap
 
-The goal is different from HeatMap. HeatMap maps Wi-Fi quality to choose access
-point placement. PresenceMap watches how Wi-Fi observations change over time and
-tries to infer events such as movement through a doorway, room occupancy, and
-vacancy.
+PresenceMap is intentionally staged. Each phase produces something you can measure before adding complexity.
 
-## Hardware Target
+| Phase | Goal | Success criteria | Status |
+|-------|------|------------------|--------|
+| **0 — Link health** | Reliable raw CSI ingest, 3-node bed cluster | ESP32 Nodes: all **ok**, CSI frames climbing, PPS stable | **You are here** (ingest working) |
+| **1 — Bed presence & motion** | Know *in bed* vs *out of bed*; coarse movement at night | Train `TemporalCSIModel` on labeled vacant/occupied sessions; live inference stable overnight | **Training pipeline works** (see below); labels are manual phase tags today |
+| **2 — Night timeline** | Segment the night: in bed, awake, restless, still | Align CSI windows to time; optional **Apple Watch** sleep stages as reference labels (import TBD) | Not built |
+| **3 — Vitals from CSI** | Respiration & heart rate tracks vs watch | Compare to Watch HR / respiratory rate during sleep; report confidence bands, not “medical grade” | Not built (RuView edge vitals are not ingested by PresenceMap v3) |
+| **4 — Sleep score** | One nightly score + explainable factors | Calibrated on watch sleep score + your notes; honest limits documented | Not built |
 
-Initial setup:
+### Milestones along the way
 
-- Netgear Nighthawk router
-- Netgear Nighthawk node
-- HP Linux computer
-- External Atheros network interface
-- MacBook M1 Max Pro for analysis and dashboard work
+1. **Record a week of nights** — `labeled_vacant` (empty room), `labeled_occupied` (you in bed, still), `labeled_occupied_moving` (reading / shifting). Same Wi‑Fi layout each night.
+2. **First bed model** — Train on 2+ session types; run **ESP32 live inference** overnight; log false wakes vs how it felt.
+3. **Watch baseline export** — Export sleep from Apple Health (XML or third-party CSV). Build a small importer that aligns timestamps to CSI `rf_windows.parquet` (planned; not in repo yet).
+4. **Restlessness metric** — Use the model’s **motion head** and amplitude deltas as a restless index; plot vs watch “awake” minutes.
+5. **Respiration / HR experiments** — CSI phase stability in breathing band (0.1–0.5 Hz) and faster components; cross-check watch HR only where literature and your data agree.
+6. **Sleep score v0** — Weighted blend (time in bed, movement, optional vitals agreement with watch); never claim clinical accuracy.
 
-## First Hypothesis
+### Apple Watch as baseline
 
-The first realistic milestone is a Wi-Fi tripwire:
+Using your Watch is a strong idea for **labels and validation**, not as the runtime sensor:
 
-1. Establish a stable baseline across a doorway, hallway, or room boundary.
-2. Continuously sample RSSI, SNR, bitrate, MCS, channel, and visible BSSIDs.
-3. Detect short-window changes that look like a body crossing the RF path.
-4. Log motion events with confidence and timestamps.
-5. Review those events on a Mac dashboard.
+- **Good for:** sleep interval boundaries, awake vs asleep, HR and respiratory rate trends, a target sleep score to correlate against.
+- **Limits:** Watch is on your wrist, CSI sees the **bed volume**; arm movement ≠ torso breathing; export lag and Apple’s stage model are proprietary.
+- **Product rule:** Present CSI-derived vitals as **estimates with confidence**, same as [AGENTS.md](AGENTS.md)—do not claim clinical-grade HR/SpO₂/sleep staging out of the box.
 
-Whole-apartment room occupancy is a second milestone. It may be possible to infer
-coarse presence with careful calibration, but it should be treated as a
-confidence-scored estimate rather than precise tracking.
+### What CSI can and cannot do (honest)
 
-## Project Direction
+| Signal | CSI (3 nodes, bed) | Watch |
+|--------|-------------------|--------|
+| In bed / out of bed | Strong candidate (Phase 1) | Indirect |
+| Large movement / restlessness | Strong (motion head + amp deltas) | Accelerometer |
+| Respiration | Possible, needs validation | Often available in sleep |
+| Heart rate | Harder through CSI; research-grade caution | Primary on wrist |
+| Sleep stages / score | Derived, model + watch calibration | Reference label |
 
-PresenceMap will evolve in three phases:
+## Is training functional?
 
-### Phase 1: Continuous Collection
+**Yes, for Phase 1 (binary occupancy + motion auxiliary loss)—not for full sleep score or vitals yet.**
 
-- Add an HP-side continuous collector.
-- Record time-series RF observations instead of click-based survey points.
-- Keep interface discovery, `iw`/`nmcli` support, project config, and CSV writer
-  patterns. Floorplan metadata remains optional context for later map overlays.
+| Capability | Works today? |
+|------------|----------------|
+| Record sessions → `sessions/<id>/rf_windows.parquet` | Yes (`esp32-record`, dashboard **Record**) |
+| Phase labels → `labels.parquet` | Yes (`labeled_vacant`, `labeled_occupied`, `labeled_occupied_moving`, `calibration`) |
+| **Training → Train** in dashboard | Yes — builds dataset, trains on MPS, saves model + metrics |
+| CLI `presence-mac train` | Yes |
+| **Models** browser, eval summary | Yes |
+| **ESP32 live inference** | Yes (needs ingest + trained model) |
+| Apple Watch import / alignment | No |
+| Sleep stages, respiration, HR, sleep score models | No |
 
-### Phase 2: Motion and Presence Scoring
+Minimum practical train: **two session types** (e.g. vacant + occupied), enough windows (dozens+ per class). The trainer errors if labeled windows &lt; 8.
 
-- Build baseline profiles for vacant, occupied, and movement states.
-- Compute rolling-window deltas and variance.
-- Emit event rows such as `motion`, `occupied`, `vacant`, and `unknown`.
-- Keep results explainable before trying any heavier modeling.
+## Quickstart
 
-### Phase 3: Automation Hooks
-
-- Publish events to MQTT, Home Assistant webhooks, or a local API.
-- Support rules such as turning on lights when confidence crosses a threshold.
-- Keep an auditable event log for security-context experiments.
-
-## Current Status
-
-This repo now centers on the PresenceMap prototype for headless HP-side
-collection, Mac-side training, and local review.
-
-## HP Presence Tripwire Prototype
-
-The prototype collector runs on the HP Linux machine with the external Atheros
-adapter. It reuses `hp_collector/wifi_scan.py` for `iw`/`nmcli` scanning, then
-writes a continuous raw log and a motion-event log under the selected project:
-
-```text
-survey_projects/<project>/presence_sessions/<session>/
-  presence_raw.csv
-  presence_events.csv
-  presence_health.csv
-  presence_experiment.json
-  presence_baseline.json
+```sh
+pip install -e .
+pip install -r requirements-mac.txt
 ```
 
-`presence_raw.csv` contains every observed BSSID row from each scan window,
-including RSSI, channel, link RSSI/SNR/bitrate/MCS fields when available, plus
-window-level tripwire metadata. `presence_events.csv` contains thresholded
-`motion` events with confidence scores and baseline deltas. `presence_health.csv`
-tracks per-window collector status for multi-day runs. `presence_experiment.json`
-records hardware placement, collection cadence, and the privacy posture for any
-webcam-derived labels. This is coarse RF motion sensing only; it does not
-identify people.
+**Terminal 1** — ingest (must be the only process on UDP 5005):
 
-### HP Linux Setup
-
-On the HP, install system tools and Python dependencies from the repo root:
-
-```bash
-sudo apt update
-sudo apt install network-manager iw python3-venv
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-hp.txt
+```sh
+presence-mac esp32-ingest --project data/survey_projects/my_bed
 ```
 
-Plug in the Atheros adapter and find its interface name:
+**Terminal 2** — dashboard:
 
-```bash
-iw dev
-nmcli device status
+```sh
+presence-mac dashboard --project data/survey_projects/my_bed
 ```
 
-The examples below use `wlan1`; replace it with the detected Atheros interface.
-For the default `iw` backend, the scanner invokes `sudo iw dev <iface> scan`, so
-run from a terminal where `sudo` is available.
+Open **ESP32 Nodes** and confirm all nodes show **ok**.
 
-### Calibrate a Baseline
+## Record + train
 
-Place the HP and adapter in the intended tripwire position, keep the doorway or
-room boundary vacant, then collect a baseline:
+Keep ingest running while recording, or let `esp32-record` bind UDP alone for that session.
 
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session front_door_tripwire \
-  --interface wlan1 \
-  --calibrate \
-  --baseline-seconds 120 \
-  --location-label front_door
+```sh
+presence-mac esp32-record --project data/survey_projects/my_bed \
+  --session bed_vacant_001 --duration 120 --phase labeled_vacant
+
+presence-mac esp32-record --project data/survey_projects/my_bed \
+  --session bed_occ_001 --duration 120 --phase labeled_occupied
+
+presence-mac esp32-record --project data/survey_projects/my_bed \
+  --session bed_restless_001 --duration 120 --phase labeled_occupied_moving
 ```
 
-This writes `presence_baseline.json` and also appends calibration observations
-to `presence_raw.csv`. Recalibrate whenever the adapter, router/node placement,
-target SSID/BSSID, or tripwire location changes.
+Then in the dashboard: **Training → Train** (select sessions, **Build dataset + train**), **Models** to review metrics, **ESP32 Nodes → ESP32 live inference** for overnight trials.
 
-### Run Continuous Monitoring
+CLI equivalent:
 
-After calibration, run the headless monitor:
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session front_door_tripwire \
-  --interface wlan1 \
-  --monitor
+```sh
+presence-mac train --project data/survey_projects/my_bed \
+  --sessions bed_vacant_001 bed_occ_001 --epochs 30
 ```
 
-Useful tuning flags:
+Optional REST API:
 
-```bash
---samples-per-window 5      # scans per scoring window
---window-seconds 5          # approximate cadence
---threshold 2.5             # higher is less sensitive
---cooldown-seconds 10       # minimum spacing between event rows
---backend auto              # try iw, then nmcli fallback
---bssid aa:bb:cc:dd:ee:ff  # lock tripwire to one AP/router/node
+```sh
+presence-mac api --project data/survey_projects/my_bed
 ```
 
-For a short smoke test without leaving it running:
+## Hardware
 
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session front_door_tripwire \
-  --interface wlan1 \
-  --monitor \
-  --max-windows 3
+| Item | Role |
+|------|------|
+| 3× ESP32-S3 | CSI nodes (RuView firmware, UDP → Mac) |
+| Mac (Apple Silicon) | Ingest, UI, training on MPS |
+| Wi‑Fi router | AP for nodes + home network |
+| Apple Watch (optional) | Reference labels for sleep roadmap phases 2–4 |
+
+See [docs/ESP32_SETUP.md](docs/ESP32_SETUP.md). Wire format and firmware live in [RuView/](RuView/) (upstream reference, not modified by PresenceMap).
+
+## Layout
+
+```
+mac_app/
+  capture/     ESP32 UDP ingest, ADR-018 parser, CSI features
+  train/       TemporalCSIModel, dataset, registry
+  inference/   Live buffer, ESP32 inference loop
+  dashboard/   Streamlit UI
+  api/         Local REST service
+shared/        Project paths, schemas
+data/          Projects, sessions, models (gitignored artifacts)
+RuView/        Upstream CSI firmware + docs (reference)
+docs/
+tests/
 ```
 
-### Presence-First Setup
+## What we removed
 
-PresenceMap does not require a labeled floorplan before data collection. The
-minimum setup is a project config with target SSID and HP interface.
+PresenceMap no longer includes the HeatMap survey stack, HP Linux `presence-agent`, AR9271 / Atheros CSI tool path, ZMQ HP→Mac transport, YOLO webcam labeling, or legacy floorplan survey UI. Those lived in earlier v1/v2 prototypes.
 
-On the Mac dashboard, open **Setup** and use **Presence Room Experiment**:
+## See also
 
-```bash
-streamlit run mac_analysis/survey_dashboard.py -- --project survey_projects/apartment_test
-```
-
-Save the target SSID, HP Wi-Fi interface, scan backend, and first room label.
-Floorplan import/labeling is still available later, but it is optional for the
-bedroom occupancy workflow.
-
-### Train Whole-Home Occupancy
-
-Whole-home occupancy is trained from guided labeled blocks. Start with a vacant
-home block, then collect occupied-still and occupied-moving blocks in the same
-presence session:
-
-For a button-driven workflow on the HP, launch:
-
-```bash
-python3 hp_collector/collector_launcher.py --project survey_projects/apartment_test
-```
-
-Use the **Bedroom Presence Training Rig** panel to set the session, interface,
-room, and durations once, then click through smoke test, calibration, training
-blocks, validation blocks, and live monitor. The Mac dashboard also has a
-one-click **Train / Evaluate Occupancy Model** button after `presence_sessions`
-has been synced back.
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block vacant \
-  --block-seconds 300
-
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block occupied_still \
-  --block-seconds 300
-
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block occupied_moving \
-  --block-seconds 300
-```
-
-This writes feature, label, and model artifacts beside the tripwire logs:
-
-```text
-survey_projects/<project>/presence_sessions/<session>/
-  presence_features.csv
-  presence_labels.csv
-  presence_states.csv
-  presence_model.json
-  presence_eval.json
-  presence_eval_errors.csv
-```
-
-For privacy-first webcam ground truth, store derived labels instead of
-continuous video. For example, a reviewed webcam signal can be recorded as a
-label source without saving frames:
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --label-block validation_occupied \
-  --block-seconds 300 \
-  --label-source webcam_derived \
-  --label-source-detail "derived occupancy only; no continuous video retained"
-```
-
-After syncing `presence_sessions` back to the Mac, train and evaluate the
-occupancy model:
-
-```bash
-python3 mac_analysis/presence_training.py \
-  --project survey_projects/apartment_test \
-  --session home_occupancy
-```
-
-This rewrites `presence_model.json`, writes `presence_eval.json`, and lists false
-positive/false negative windows in `presence_eval_errors.csv` for dashboard
-review.
-
-Run conservative live occupancy scoring after the model has both vacant and
-occupied examples:
-
-```bash
-./scripts/run_presence_tripwire.sh \
-  --project survey_projects/apartment_test \
-  --session home_occupancy \
-  --interface wlan1 \
-  --monitor \
-  --occupancy-monitor
-```
-
-The live state stream is intentionally conservative. It can emit `unknown` when
-the RF evidence is weak or mixed, and it does not identify people.
-
-## Safety and Privacy
-
-PresenceMap should be treated as experimental sensing infrastructure. It should
-not be used as a sole security system, and any occupancy logging should be
-designed with clear local control, retention limits, and visibility into what is
-being stored.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — v3 platform features and retired paths

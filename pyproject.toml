@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "presencemap"
+version = "3.0.0a0"
+description = "ESP32 CSI room presence sensing on Mac"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[project.scripts]
+presence-mac = "mac_app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mac_app*", "shared*"]
+exclude = ["tools*", "tests*", "RuView*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
