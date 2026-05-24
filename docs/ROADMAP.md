@@ -11,9 +11,10 @@
 ## Next
 
 1. **Bedroom presence stable** — seq-gap alarms, ingest + inference in one supervised process option
-2. **Distributed nodes** — one ESP32 per room; multi-head or per-room models + `rooms.json` heatmap
-3. **Automation** — scene recorder, MQTT / Home Assistant webhooks
-4. **Research** — vitals / sleep metrics (honest confidence bands), optional camera-assisted training
+2. **Sleep tracking (north star)** — see [README sleep roadmap](../README.md#sleep-tracking-roadmap): bed presence → night timeline → vitals vs watch → sleep score
+3. **Distributed nodes** — one ESP32 per room; multi-head or per-room models + `rooms.json` heatmap
+4. **Automation** — scene recorder, MQTT / Home Assistant webhooks
+5. **Research** — vitals / sleep metrics (honest confidence bands), optional camera-assisted training
 
 ## Retired (removed in v3 cleanup)
 

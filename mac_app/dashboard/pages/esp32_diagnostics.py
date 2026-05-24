@@ -39,21 +39,39 @@ def render(project_dir: Path) -> None:
         st.code("presence-mac esp32-ingest --project " + str(project_dir), language="bash")
         return
 
-    agg = state.aggregate
-    if agg:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total PPS", f"{agg.get('total_pps', 0):.1f}")
-        c2.metric("Nodes OK", agg.get("nodes_ok", 0))
-        c3.metric("CSI frames", agg.get("csi_frames_parsed", 0))
-        c4.metric("Seq parse errs", agg.get("parse_errors", 0))
-        st.caption(
-            f"Ingest {'running' if state.ingest_running else 'stopped'} · "
-            f"UDP :{state.udp_port} · window {state.window_seconds}s · "
-            f"updated {state.updated_at}"
-        )
+    agg = state.aggregate or {}
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total PPS", f"{agg.get('total_pps', 0):.1f}")
+    c2.metric("Nodes OK", agg.get("nodes_ok", 0))
+    c3.metric("CSI frames", agg.get("csi_frames_parsed", 0))
+    c4.metric("Non-CSI skipped", agg.get("sibling_packets_skipped", 0))
+    c5.metric("Parse errors", agg.get("parse_errors", 0))
+    st.caption(
+        f"Ingest {'running' if state.ingest_running else 'stopped'} · "
+        f"UDP :{state.udp_port} · window {state.window_seconds}s · "
+        f"updated {state.updated_at}"
+    )
 
-    if not state.nodes:
-        st.warning("Ingest running but no nodes seen yet. Check target IP and tcpdump.")
+    if not state.ingest_running:
+        st.warning(
+            "Ingest is **stopped**. Start it in another terminal (dashboard does not bind UDP):"
+        )
+        st.code("presence-mac esp32-ingest --project " + str(project_dir), language="bash")
+    elif not state.nodes:
+        skipped = int(agg.get("sibling_packets_skipped", 0))
+        csi = int(agg.get("csi_frames_parsed", 0))
+        if skipped > 0 and csi == 0:
+            st.error(
+                "UDP is arriving but **no raw CSI** (`0xC5110001`) was parsed. "
+                "Your tcpdump lengths (~60 B) look like RuView **vitals/feature** packets, "
+                "not ADR-018 CSI (~150+ B). Reflash or re-provision nodes to stream raw CSI "
+                "(see [ESP32_SETUP.md](../../../docs/ESP32_SETUP.md) troubleshooting)."
+            )
+        else:
+            st.warning(
+                "Ingest is running but no nodes yet. Confirm node `target-ip` is this Mac "
+                "and check tcpdump on UDP :5005."
+            )
     else:
         for node in state.nodes:
             with st.container(border=True):
@@ -81,6 +99,8 @@ def render(project_dir: Path) -> None:
                 df = pd.DataFrame(frames)
                 df["t"] = pd.to_datetime(df["t"], unit="s")
                 pivot = df.pivot_table(index="t", columns="node", values="pps", aggfunc="last")
+                # Altair treats ":" in column names as encoding shorthand (e.g. "192.168.1.1:2" → type "2").
+                pivot = pivot.rename(columns=lambda c: str(c).replace(":", " · "))
                 st.line_chart(pivot)
 
     if state.recent_log:
